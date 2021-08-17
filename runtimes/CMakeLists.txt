@@ -132,6 +132,31 @@ foreach(entry ${runtimes})
   set(HAVE_${canon_name} ON)
 endforeach()
 
+if(LLVM_INCLUDE_TESTS)
+  set(LIT_ARGS_DEFAULT "-sv --show-xfail --show-unsupported")
+  if (MSVC OR XCODE)
+    set(LIT_ARGS_DEFAULT "${LIT_ARGS_DEFAULT} --no-progress-bar")
+  endif()
+  set(LLVM_LIT_ARGS "${LIT_ARGS_DEFAULT}" CACHE STRING "Default options for lit")
+endif()
+
+# llvm-libgcc incorporates both compiler-rt and libunwind as subprojects with very
+# specific flags, which causes clashes when they're independently built too.
+if("llvm-libgcc" IN_LIST runtimes)
+  if("compiler-rt" IN_LIST runtimes OR "compiler-rt" IN_LIST LLVM_ENABLE_PROJECTS)
+    message(FATAL_ERROR
+      "Attempting to build both compiler-rt and llvm-libgcc will cause irreconcilable "
+      "target clashes. Please choose one or the other, but not both.")
+  endif()
+
+  if("libunwind" IN_LIST runtimes)
+    message(
+      FATAL_ERROR
+      "Attempting to build both libunwind and llvm-libgcc will cause irreconcilable "
+      "target clashes. Please choose one or the other, but not both.")
+  endif()
+endif()
+
 # We do this in two loops so that HAVE_* is set for each runtime before the
 # other runtimes are added.
 foreach(entry ${runtimes})
