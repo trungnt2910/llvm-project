@@ -646,7 +646,7 @@ template <typename A, typename R>
 bool UnwindCursor<A, R>::validReg(int regNum) {
   if (regNum == UNW_REG_IP || regNum == UNW_REG_SP) return true;
 #if defined(_LIBUNWIND_TARGET_X86_64)
-  if (regNum >= UNW_X86_64_RAX && regNum <= UNW_X86_64_R15) return true;
+  if (regNum >= UNW_X86_64_RAX && regNum <= UNW_x86_64_RIP) return true;
 #elif defined(_LIBUNWIND_TARGET_ARM)
   if (regNum >= UNW_ARM_R0 && regNum <= UNW_ARM_R15) return true;
 #elif defined(_LIBUNWIND_TARGET_AARCH64)
@@ -659,7 +659,8 @@ template <typename A, typename R>
 unw_word_t UnwindCursor<A, R>::getReg(int regNum) {
   switch (regNum) {
 #if defined(_LIBUNWIND_TARGET_X86_64)
-  case UNW_REG_IP: return _msContext.Rip;
+  case UNW_REG_IP:
+  case UNW_x86_64_RIP: return _msContext.Rip;
   case UNW_X86_64_RAX: return _msContext.Rax;
   case UNW_X86_64_RDX: return _msContext.Rdx;
   case UNW_X86_64_RCX: return _msContext.Rcx;
@@ -709,7 +710,8 @@ template <typename A, typename R>
 void UnwindCursor<A, R>::setReg(int regNum, unw_word_t value) {
   switch (regNum) {
 #if defined(_LIBUNWIND_TARGET_X86_64)
-  case UNW_REG_IP: _msContext.Rip = value; break;
+  case UNW_REG_IP:
+  case UNW_x86_64_RIP: _msContext.Rip = value; break;
   case UNW_X86_64_RAX: _msContext.Rax = value; break;
   case UNW_X86_64_RDX: _msContext.Rdx = value; break;
   case UNW_X86_64_RCX: _msContext.Rcx = value; break;
@@ -2105,9 +2107,9 @@ int UnwindCursor<A, R>::stepThroughSigReturn() {
 #if defined(_LIBUNWIND_TARGET_X86_64)
   vregs *regs = (vregs*)(sp + 0x70);
   //printf("&regs: %p\n", regs);
- 
+
   _registers.setRegister(UNW_REG_IP, regs->rip);
-  _registers.setRegister(UNW_REG_SP, regs->rsp);  
+  _registers.setRegister(UNW_REG_SP, regs->rsp);
   _registers.setRegister(UNW_X86_64_RAX, regs->rax);
   _registers.setRegister(UNW_X86_64_RDX, regs->rdx);
   _registers.setRegister(UNW_X86_64_RCX, regs->rcx);
