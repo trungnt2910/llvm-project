@@ -279,6 +279,48 @@ void __unw_remove_dynamic_fde(unw_word_t fde) {
   // fde is own mh_group
   DwarfFDECache<LocalAddressSpace>::removeAllIn((LocalAddressSpace::pint_t)fde);
 }
+
+/// IPI: for __register_frame_info()
+void __unw_add_dynamic_fde_list(unw_word_t fde) {
+  auto &addressSpace = LocalAddressSpace::sThisAddressSpace;
+  for (;;) {
+    addr_t p = fde;
+    addr_t length = (addr_t)addressSpace.get32(p);
+    p += 4;
+    addr_t contentEnd = p + length;
+    if (length == 0xffffffff) {
+      length = (addr_t)addressSpace.get64(p);
+      p += 8;
+      contentEnd = p + length;
+    }
+    if (length == 0)
+      break;
+    if (addressSpace.get32(p) != 0)
+      __unw_add_dynamic_fde(fde);
+    fde = contentEnd;
+  }
+}
+
+/// IPI: for __deregister_frame_info()
+void __unw_remove_dynamic_fde_list(unw_word_t fde) {
+  auto &addressSpace = LocalAddressSpace::sThisAddressSpace;
+  for (;;) {
+    addr_t p = fde;
+    addr_t length = (addr_t)addressSpace.get32(p);
+    p += 4;
+    addr_t contentEnd = p + length;
+    if (length == 0xffffffff) {
+      length = (addr_t)addressSpace.get64(p);
+      p += 8;
+      contentEnd = p + length;
+    }
+    if (length == 0)
+      break;
+    if (addressSpace.get32(p) != 0)
+      DwarfFDECache<LocalAddressSpace>::removeAllIn((LocalAddressSpace::pint_t)fde);
+    fde = contentEnd;
+  }
+}
 #endif // defined(_LIBUNWIND_SUPPORT_DWARF_UNWIND)
 #endif // !defined(__USING_SJLJ_EXCEPTIONS__)
 

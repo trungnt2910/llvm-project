@@ -18,6 +18,12 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#ifdef __HAIKU__
+#define _DEFAULT_SOURCE
+#include <bsd/sys/link_elf.h>
+#define PT_GNU_EH_FRAME PT_EH_FRAME
+#endif
+
 #ifdef __APPLE__
   #if __clang__
     #if __has_include(<Availability.h>)

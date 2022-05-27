@@ -275,10 +275,14 @@ _LIBUNWIND_EXPORT void __register_frame_info_bases(const void *fde, void *ob,
 }
 
 _LIBUNWIND_EXPORT void __register_frame_info(const void *fde, void *ob) {
-  (void)fde;
   (void)ob;
   _LIBUNWIND_TRACE_API("__register_frame_info(%p, %p)", fde, ob);
+#if defined(__HAIKU__)
+  __unw_add_dynamic_fde_list((unw_word_t)(uintptr_t)fde);
+#else
+  (void)fde;
   // do nothing, this function never worked in Mac OS X
+#endif
 }
 
 _LIBUNWIND_EXPORT void __register_frame_info_table_bases(const void *fde,
@@ -307,9 +311,13 @@ _LIBUNWIND_EXPORT void __register_frame_table(const void *fde) {
 }
 
 _LIBUNWIND_EXPORT void *__deregister_frame_info(const void *fde) {
-  (void)fde;
   _LIBUNWIND_TRACE_API("__deregister_frame_info(%p)", fde);
+#if defined(__HAIKU__)
+  __unw_remove_dynamic_fde_list((unw_word_t)(uintptr_t)fde);
+#else
+  (void)fde;
   // do nothing, this function never worked in Mac OS X
+#endif
   return NULL;
 }
 
