@@ -3,17 +3,39 @@ include(GNUInstallDirs)
 
 string(REPLACE "-Wl,-z,defs" "" CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS}")
 
+add_executable(process_version_script
+  "${CMAKE_CURRENT_SOURCE_DIR}/process_version_script.cpp"
+)
+
+set_target_properties(process_version_script
+  PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    OUTPUT_NAME "process_version_script"
+)
+
 add_custom_target(gcc_s_ver ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/gcc_s.ver")
 set(LLVM_LIBGCC_GCC_S_VER "${CMAKE_CURRENT_BINARY_DIR}/gcc_s.ver")
 
-add_custom_target(gcc_s.ver ALL
+add_custom_target(gcc_s.tmp.ver ALL
   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/gcc_s.ver"
   COMMAND
     "${CMAKE_C_COMPILER}"
     "-E"
     "-xc" "${CMAKE_CURRENT_SOURCE_DIR}/gcc_s.ver"
-    "-o" "${CMAKE_CURRENT_BINARY_DIR}/gcc_s.ver"
+    "-o" "${CMAKE_CURRENT_BINARY_DIR}/gcc_s.tmp.ver"
 )
+
+set_target_properties(gcc_s.tmp.ver PROPERTIES
+  OUTPUT_PATH "${CMAKE_CURRENT_BINARY_DIR}/gcc_s.tmp.ver")
+
+add_custom_target(gcc_s.ver ALL
+  DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/gcc_s.tmp.ver" "${CMAKE_CURRENT_BINARY_DIR}/process_version_script"
+  COMMAND
+    "${CMAKE_CURRENT_BINARY_DIR}/process_version_script"
+    "${CMAKE_CURRENT_BINARY_DIR}/gcc_s.tmp.ver"
+    "${CMAKE_CURRENT_BINARY_DIR}/gcc_s.ver"
+)
+
 set_target_properties(gcc_s.ver PROPERTIES
   OUTPUT_PATH "${CMAKE_CURRENT_BINARY_DIR}/gcc_s.ver")
 
