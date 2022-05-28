@@ -246,7 +246,20 @@ void InitHeaderSearch::AddDefaultCIncludePaths(const llvm::Triple &triple,
   if (HSOpts.UseBuiltinIncludes) {
     // Ignore the sys root, we *always* look for clang headers relative to
     // supplied path.
+#ifdef HAIKU_HYBRID_SECONDARY
+    // Remove version from foo/lib/clang/version
+    StringRef Ver = llvm::sys::path::filename(HSOpts.ResourceDir);
+    StringRef NoVer = llvm::sys::path::parent_path(HSOpts.ResourceDir);
+    // Remove clang from foo/lib/clang
+    StringRef Clang = llvm::sys::path::filename(NoVer);
+    SmallString<128> P = llvm::sys::path::parent_path(NoVer);
+
+    // Get foo/include/c++/v1
+    llvm::sys::path::append(P, Clang, Ver);
+#else
     SmallString<128> P = StringRef(HSOpts.ResourceDir);
+#endif
+
     llvm::sys::path::append(P, "include");
     AddUnmappedPath(P, ExternCSystem, false);
   }
@@ -282,7 +295,12 @@ void InitHeaderSearch::AddDefaultCIncludePaths(const llvm::Triple &triple,
   }
 
   case llvm::Triple::Haiku:
+#ifdef HAIKU_HYBRID_SECONDARY
+    AddPath("/boot/system/non-packaged/develop/headers/" HAIKU_HYBRID_SECONDARY,
+            System, false);
+#else
     AddPath("/boot/system/non-packaged/develop/headers", System, false);
+#endif
     AddPath("/boot/system/develop/headers/os", System, false);
     AddPath("/boot/system/develop/headers/os/app", System, false);
     AddPath("/boot/system/develop/headers/os/arch", System, false);
@@ -314,6 +332,13 @@ void InitHeaderSearch::AddDefaultCIncludePaths(const llvm::Triple &triple,
     AddPath("/boot/system/develop/headers/bsd", System, false);
     AddPath("/boot/system/develop/headers/glibc", System, false);
     AddPath("/boot/system/develop/headers/posix", System, false);
+#ifdef HAIKU_HYBRID_SECONDARY
+    AddPath("/boot/system/develop/headers/" HAIKU_HYBRID_SECONDARY, System, false);
+    AddPath("/boot/system/develop/headers/" HAIKU_HYBRID_SECONDARY "/os", System,
+            false);
+    AddPath("/boot/system/develop/headers/" HAIKU_HYBRID_SECONDARY "/os/opengl",
+            System, false);
+#endif
     AddPath("/boot/system/develop/headers",  System, false);
     break;
   case llvm::Triple::RTEMS:

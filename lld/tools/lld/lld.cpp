@@ -153,10 +153,12 @@ static int lldMain(int argc, const char **argv, llvm::raw_ostream &stdoutOS,
     return !elf::link(args, exitEarly, stdoutOS, stderrOS);
   case WinLink:
     return !coff::link(args, exitEarly, stdoutOS, stderrOS);
+#ifndef __HAIKU__
   case Darwin:
     return !mach_o::link(args, exitEarly, stdoutOS, stderrOS);
   case DarwinNew:
     return !macho::link(args, exitEarly, stdoutOS, stderrOS);
+#endif
   case Wasm:
     return !lld::wasm::link(args, exitEarly, stdoutOS, stderrOS);
   default:

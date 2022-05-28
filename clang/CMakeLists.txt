@@ -403,6 +403,10 @@ if (APPLE)
   endif()
   message(STATUS "Host linker version: ${HOST_LINK_VERSION}")
 endif()
+if(DEFINED HAIKU_HYBRID_SECONDARY)
+  add_definitions(-DHAIKU_HYBRID_SECONDARY=${HAIKU_HYBRID_SECONDARY})
+endif()
+
 
 include(CMakeParseArguments)
 include(AddClang)

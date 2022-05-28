@@ -24,4 +24,8 @@ add_llvm_tool(llvm-jitlink
   llvm-jitlink-macho.cpp
   )
 
+if( HAIKU )
+  target_link_libraries(llvm-jitlink PRIVATE network)
+endif()
+
 export_executable_symbols(llvm-jitlink)

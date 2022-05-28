@@ -9,6 +9,17 @@ add_lld_tool(lld
   )
 export_executable_symbols_for_plugins(lld)
 
+if (HAIKU)
+target_link_libraries(lld
+  PRIVATE
+  lldCommon
+  lldCOFF
+  lldDriver
+  lldELF
+  lldMinGW
+  lldWasm
+  )
+else()
 target_link_libraries(lld
   PRIVATE
   lldCommon
@@ -19,6 +30,7 @@ target_link_libraries(lld
   lldMinGW
   lldWasm
   )
+endif()
 
 install(TARGETS lld
   RUNTIME DESTINATION bin)

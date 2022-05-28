@@ -22,9 +22,7 @@ public:
   Haiku(const Driver &D, const llvm::Triple &Triple,
           const llvm::opt::ArgList &Args);
 
-  bool isPIEDefault() const override {
-    return getTriple().getArch() == llvm::Triple::x86_64;
-  }
+  bool isPIEDefault() const override { return false; }
 
   void addLibCxxIncludePaths(
       const llvm::opt::ArgList &DriverArgs,

@@ -11,4 +11,8 @@ add_llvm_utility(llvm-jitlink-executor
   intrinsics_gen
 )
 
+if( HAIKU )
+  target_link_libraries(llvm-jitlink-executor PRIVATE network)
+endif()
+
 export_executable_symbols(llvm-jitlink-executor)

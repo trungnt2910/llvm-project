@@ -19,6 +19,13 @@ using namespace llvm::opt;
 Haiku::Haiku(const Driver &D, const llvm::Triple& Triple, const ArgList &Args)
   : Generic_ELF(D, Triple, Args) {
 
+#ifdef HAIKU_HYBRID_SECONDARY
+  getProgramPaths().insert(getProgramPaths().begin(), getDriver().SysRoot
+                           + "/system/bin/" HAIKU_HYBRID_SECONDARY);
+  getFilePaths().clear();
+  getFilePaths().push_back(getDriver().SysRoot + "/system/lib/"
+                           HAIKU_HYBRID_SECONDARY);
+#endif
 }
 
 void Haiku::addLibCxxIncludePaths(const llvm::opt::ArgList &DriverArgs,
@@ -29,6 +36,12 @@ void Haiku::addLibCxxIncludePaths(const llvm::opt::ArgList &DriverArgs,
 
 void Haiku::addLibStdCxxIncludePaths(const llvm::opt::ArgList &DriverArgs,
                                      llvm::opt::ArgStringList &CC1Args) const {
+#ifdef HAIKU_HYBRID_SECONDARY
+  addLibStdCXXIncludePaths(getDriver().SysRoot, "/system/develop/headers/"
+                     HAIKU_HYBRID_SECONDARY "/c++", getTriple().str(), "", "", "",
+                     DriverArgs, CC1Args);
+#else
   addLibStdCXXIncludePaths(getDriver().SysRoot, "/system/develop/headers/c++",
-                           getTriple().str(), "", "", "", DriverArgs, CC1Args);
+                     getTriple().str(), "", "", "", DriverArgs, CC1Args);
+#endif
 }
