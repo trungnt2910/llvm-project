@@ -41,6 +41,7 @@ set_target_properties(gcc_s.ver PROPERTIES
 
 add_library(libgcc_s SHARED blank.c)
 add_dependencies(libgcc_s gcc_s_ver)
+if(NOT LLVM_LIBGCC_IMITATE_NAME)
 set_target_properties(libgcc_s
   PROPERTIES
     LINKER_LANGUAGE C
@@ -48,6 +49,15 @@ set_target_properties(libgcc_s
     VERSION "1.0"
     SOVERSION "1"
     POSITION_INDEPENDENT_CODE ON)
+else()
+set_target_properties(libgcc_s
+  PROPERTIES
+    LINKER_LANGUAGE C
+    OUTPUT_NAME "gcc_s"
+    VERSION "1.0"
+    SOVERSION "1"
+    POSITION_INDEPENDENT_CODE ON)
+endif()
 string(REGEX MATCH "[^-]+" LLVM_LIBGCC_TARGET_ARCH ${CMAKE_C_COMPILER_TARGET})
 target_link_libraries(libgcc_s PRIVATE
   $<TARGET_OBJECTS:unwind_static>
@@ -90,11 +100,13 @@ install(CODE "execute_process(
                 create_symlink libunwind.a libgcc_eh.a
                 WORKING_DIRECTORY \"\$ENV{DESTDIR}${LLVM_LIBGCC_LIBUNWIND_STATIC_ROOT}\")"
         COMPONENT unwind)
+if(NOT LLVM_LIBGCC_IMITATE_NAME)
 install(CODE "execute_process(
                COMMAND \"\${CMAKE_COMMAND}\" -E
                create_symlink libunwind.so libgcc_s.so.1.0
                WORKING_DIRECTORY \"\$ENV{DESTDIR}${LLVM_LIBGCC_LIBUNWIND_STATIC_ROOT}\")"
         COMPONENT unwind)
+endif()
 install(CODE "execute_process(
                 COMMAND \"\${CMAKE_COMMAND}\" -E
                 create_symlink libgcc_s.so.1.0 libgcc_s.so.1
