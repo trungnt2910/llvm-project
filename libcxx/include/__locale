@@ -35,6 +35,8 @@
 # include <__support/newlib/xlocale.h>
 #elif defined(__OpenBSD__)
 # include <__support/openbsd/xlocale.h>
+#elif defined(__HAIKU__)
+# include <__support/haiku/xlocale.h>
 #elif (defined(__APPLE__)      || defined(__FreeBSD__) \
     || defined(__EMSCRIPTEN__) || defined(__IBMCPP__))
 # include <xlocale.h>
