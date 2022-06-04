@@ -318,6 +318,10 @@ if (MSVC)
   add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 endif()
 
+if (HAIKU)
+  add_definitions(-D_DEFAULT_SOURCE)
+endif()
+
 # Disable DLL annotations on Windows for static builds.
 if (WIN32 AND LIBUNWIND_ENABLE_STATIC AND NOT LIBUNWIND_ENABLE_SHARED)
   add_definitions(-D_LIBUNWIND_DISABLE_VISIBILITY_ANNOTATIONS)
@@ -329,6 +333,18 @@ if (LIBUNWIND_HAS_COMMENT_LIB_PRAGMA)
   endif()
   if (LIBUNWIND_HAS_PTHREAD_LIB)
     add_definitions(-D_LIBUNWIND_LINK_PTHREAD_LIB)
+  endif()
+endif()
+
+if (HAIKU)
+  list(APPEND CMAKE_REQUIRED_DEFINITIONS -D_DEFAULT_SOURCE)
+  list(APPEND CMAKE_REQUIRED_LIBRARIES bsd)
+  check_symbol_exists(dl_iterate_phdr link.h LIBUNWIND_HAS_DL_ITERATE_PHDR)
+  list(REMOVE_ITEM CMAKE_REQUIRED_DEFINITIONS -D_DEFAULT_SOURCE)
+  list(REMOVE_ITEM CMAKE_REQUIRED_LIBRARIES bsd)
+  
+  if (LIBUNWIND_HAS_DL_ITERATE_PHDR)
+    add_definitions(-D_LIBUNWIND_USE_DL_ITERATE_PHDR=1)
   endif()
 endif()
 

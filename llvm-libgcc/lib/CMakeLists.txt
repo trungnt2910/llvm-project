@@ -67,6 +67,18 @@ target_link_options(libgcc_s PRIVATE
   -nostdlib
   -Wl,--version-script,$<TARGET_PROPERTY:gcc_s.ver,OUTPUT_PATH>)
 
+if (HAIKU)
+  list(APPEND CMAKE_REQUIRED_DEFINITIONS -D_DEFAULT_SOURCE)
+  list(APPEND CMAKE_REQUIRED_LIBRARIES bsd)
+  check_symbol_exists(dl_iterate_phdr link.h LLVM_LIBGCC_HAS_DL_ITERATE_PHDR)
+  list(REMOVE_ITEM CMAKE_REQUIRED_DEFINITIONS -D_DEFAULT_SOURCE)
+  list(REMOVE_ITEM CMAKE_REQUIRED_LIBRARIES bsd)
+  
+  if (LLVM_LIBGCC_HAS_DL_ITERATE_PHDR)
+    target_link_libraries(libgcc_s PRIVATE bsd)
+  endif()
+endif()
+
 check_library_exists(m sin "" LLVM_LIBGCC_HAS_LIBM)
 target_link_libraries(libgcc_s PRIVATE
   $<$<BOOL:LLVM_LIBGCC_HAS_LIBM>:m>

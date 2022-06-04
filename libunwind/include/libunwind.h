@@ -19,9 +19,13 @@
 #include <stddef.h>
 
 #ifdef __HAIKU__
-#define _DEFAULT_SOURCE
-#include <bsd/sys/link_elf.h>
-#define PT_GNU_EH_FRAME PT_EH_FRAME
+  #ifndef _DEFAULT_SOURCE
+    #define _DEFAULT_SOURCE
+  #endif
+    #include <bsd/sys/link_elf.h>
+  #ifndef PT_GNU_EH_FRAME
+    #define PT_GNU_EH_FRAME PT_EH_FRAME
+  #endif
 #endif
 
 #ifdef __APPLE__
