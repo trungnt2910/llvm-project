@@ -67,17 +67,36 @@ target_link_options(libgcc_s PRIVATE
   -nostdlib
   -Wl,--version-script,$<TARGET_PROPERTY:gcc_s.ver,OUTPUT_PATH>)
 
-if (HAIKU)
-  list(APPEND CMAKE_REQUIRED_DEFINITIONS -D_DEFAULT_SOURCE)
-  list(APPEND CMAKE_REQUIRED_LIBRARIES bsd)
-  check_symbol_exists(dl_iterate_phdr link.h LLVM_LIBGCC_HAS_DL_ITERATE_PHDR)
-  list(REMOVE_ITEM CMAKE_REQUIRED_DEFINITIONS -D_DEFAULT_SOURCE)
-  list(REMOVE_ITEM CMAKE_REQUIRED_LIBRARIES bsd)
-  
-  if (LLVM_LIBGCC_HAS_DL_ITERATE_PHDR)
-    target_link_libraries(libgcc_s PRIVATE bsd)
-  endif()
-endif()
+if(HAIKU)
+  find_file(HAIKU_CRTI
+    crti.o
+    HINTS ${CMAKE_HAIKU_DEVELOP_LIB_DIRECTORIES}
+  )
+  find_file(HAIKU_CRTN
+    crtn.o
+    HINTS ${CMAKE_HAIKU_DEVELOP_LIB_DIRECTORIES}
+  )
+  find_file(HAIKU_INIT_TERM_DYN
+    init_term_dyn.o
+    HINTS ${CMAKE_HAIKU_DEVELOP_LIB_DIRECTORIES}
+  )
+
+  target_sources(libgcc_s PRIVATE
+    "../../compiler-rt/lib/crt/crtbegin.c"
+    "../../compiler-rt/lib/crt/crtend.c"
+  )
+
+  target_compile_definitions(libgcc_s PRIVATE
+    -DCRT_HAS_INITFINI_ARRAY
+    -DEH_USE_FRAME_REGISTRY
+  )
+
+  target_link_libraries(libgcc_s PRIVATE
+    ${HAIKU_CRTI}
+    ${HAIKU_INIT_TERM_DYN}
+    ${HAIKU_CRTN}
+  )
+endif(HAIKU)
 
 check_library_exists(m sin "" LLVM_LIBGCC_HAS_LIBM)
 target_link_libraries(libgcc_s PRIVATE

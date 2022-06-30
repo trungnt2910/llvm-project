@@ -336,18 +336,6 @@ if (LIBUNWIND_HAS_COMMENT_LIB_PRAGMA)
   endif()
 endif()
 
-if (HAIKU)
-  list(APPEND CMAKE_REQUIRED_DEFINITIONS -D_DEFAULT_SOURCE)
-  list(APPEND CMAKE_REQUIRED_LIBRARIES bsd)
-  check_symbol_exists(dl_iterate_phdr link.h LIBUNWIND_HAS_DL_ITERATE_PHDR)
-  list(REMOVE_ITEM CMAKE_REQUIRED_DEFINITIONS -D_DEFAULT_SOURCE)
-  list(REMOVE_ITEM CMAKE_REQUIRED_LIBRARIES bsd)
-  
-  if (LIBUNWIND_HAS_DL_ITERATE_PHDR)
-    add_definitions(-D_LIBUNWIND_USE_DL_ITERATE_PHDR=1)
-  endif()
-endif()
-
 #===============================================================================
 # Setup Source Code
 #===============================================================================
