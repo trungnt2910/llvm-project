@@ -141,6 +141,16 @@
 #define _LIBUNWIND_REMEMBER_CLEANUP_NEEDED
 #endif
 
+#ifndef _LIBUNWIND_INIT_FDE_CACHE_SIZE
+  #if defined(__HAIKU__)
+    // Large enough to prevent malloc from being called
+    // before libroot is initialized.
+    #define _LIBUNWIND_INIT_FDE_CACHE_SIZE 512
+  #else
+    #define _LIBUNWIND_INIT_FDE_CACHE_SIZE 64
+  #endif
+#endif
+
 #if defined(NDEBUG) && defined(_LIBUNWIND_IS_BAREMETAL)
 #define _LIBUNWIND_ABORT(msg)                                                  \
   do {                                                                         \
