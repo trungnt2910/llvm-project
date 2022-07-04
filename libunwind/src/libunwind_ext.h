@@ -50,8 +50,11 @@ extern void __unw_iterate_dwarf_unwind_cache(void (*func)(
 // IPI
 extern void __unw_add_dynamic_fde(unw_word_t fde);
 extern void __unw_remove_dynamic_fde(unw_word_t fde);
-extern void __unw_add_dynamic_fde_list(unw_word_t fde);
+
+#ifdef __HAIKU__
+extern void __unw_add_dynamic_fde_list(unw_word_t fde, void* ob);
 extern void __unw_remove_dynamic_fde_list(unw_word_t fde);
+#endif
 
 #if defined(_LIBUNWIND_ARM_EHABI)
 extern const uint32_t* decode_eht_entry(const uint32_t*, size_t*, size_t*);

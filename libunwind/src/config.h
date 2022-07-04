@@ -44,13 +44,13 @@
   // API 21, dl_iterate_phdr exists, but dl_unwind_find_exidx is much faster.
   #define _LIBUNWIND_USE_DL_UNWIND_FIND_EXIDX 1
 #else
-#if !defined(__HAIKU__)
-  // Assume an ELF system with a dl_iterate_phdr function.
-  #define _LIBUNWIND_USE_DL_ITERATE_PHDR 1
-#endif
+  #if !defined(__HAIKU__)
+    // Assume an ELF system with a dl_iterate_phdr function.
+    #define _LIBUNWIND_USE_DL_ITERATE_PHDR 1
+    #define _LIBUNWIND_SUPPORT_DWARF_INDEX 1
+  #endif
   #if !defined(_LIBUNWIND_ARM_EHABI)
     #define _LIBUNWIND_SUPPORT_DWARF_UNWIND 1
-    #define _LIBUNWIND_SUPPORT_DWARF_INDEX 1
   #endif
 #endif
 
@@ -139,16 +139,6 @@
 #define _LIBUNWIND_REMEMBER_ALLOC(_size) malloc(_size)
 #define _LIBUNWIND_REMEMBER_FREE(_ptr) free(_ptr)
 #define _LIBUNWIND_REMEMBER_CLEANUP_NEEDED
-#endif
-
-#ifndef _LIBUNWIND_INIT_FDE_CACHE_SIZE
-  #if defined(__HAIKU__)
-    // Large enough to prevent malloc from being called
-    // before libroot is initialized.
-    #define _LIBUNWIND_INIT_FDE_CACHE_SIZE 512
-  #else
-    #define _LIBUNWIND_INIT_FDE_CACHE_SIZE 64
-  #endif
 #endif
 
 #if defined(NDEBUG) && defined(_LIBUNWIND_IS_BAREMETAL)

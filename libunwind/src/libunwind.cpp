@@ -281,50 +281,23 @@ void __unw_remove_dynamic_fde(unw_word_t fde) {
 }
 
 #ifdef __HAIKU__
-#include <unistd.h>
-#include <errno.h>
-#include <fcntl.h>
-
-static bool check_memory(void* ptr) {
-  int fds[2];
-  int flags;
-
-  if (pipe(fds) != 0) {
-      _LIBUNWIND_DEBUG_LOG("check_memory: pipe failed: errno is %d (%s)\n", errno, strerror(errno));
-      return false;
-  }
-
-  flags = fcntl(fds[0], F_GETFL, 0);
-  fcntl(fds[0], F_SETFL, flags | O_NONBLOCK);
-
-  flags = fcntl(fds[1], F_GETFL, 0);
-  fcntl(fds[1], F_SETFL, flags | O_NONBLOCK);
-
-  int written = write(fds[1], ptr, 1);
-
-  close(fds[0]);
-  close(fds[1]);
-
-  return written != -1;
-}
-
 /// IPI: for __register_frame_info()
-void __unw_add_dynamic_fde_list(unw_word_t fde) {
+void __unw_add_dynamic_fde_list(unw_word_t fde, void* ob) {
   auto &addressSpace = LocalAddressSpace::sThisAddressSpace;
-  size_t pageSize = sysconf(_SC_PAGESIZE);
-  addr_t lastCheckedPage = 0;
+  object* obj = (object*)ob;
+  if (obj != NULL) {
+    // This is most likely to be called during image initialization.
+    // Lazily remember the section address for later use.
+    object* head = addressSpace.frame_info_objects;
+    obj->fde_start = (void*)fde;
+    obj->next = head;
+    addressSpace.frame_info_objects = obj;
+    return;
+  }
+  // For a list of FDEs, use the first FDE as the mh_group.
+  // This simplifies cleaning in __unw_remove_dynamic_fde_list.
+  unw_word_t mh_group = fde;
   for (;;) {
-    // The library, when compiled by either GCC or clang,
-    // generates some really weird FDE info.
-    // Without this check, for libunwind only, the loop would
-    // continue forever and then segfaults.
-    if (fde - lastCheckedPage > pageSize) {
-      lastCheckedPage = fde & (~(pageSize - 1));
-      if (!check_memory((void*)lastCheckedPage)) {
-        _LIBUNWIND_DEBUG_LOG("__unw_add_dynamic_fde_list: bad fde address: %p\n", (void*)fde);
-        break;
-      }
-    }
     addr_t p = fde;
     addr_t length = (addr_t)addressSpace.get32(p);
     p += 4;
@@ -334,35 +307,31 @@ void __unw_add_dynamic_fde_list(unw_word_t fde) {
       p += 8;
       contentEnd = p + length;
     }
+    // Terminating entry
     if (length == 0)
       break;
-    if (addressSpace.get32(p) != 0)
-      __unw_add_dynamic_fde(fde);
+    // If not a CIE
+    if (addressSpace.get32(p) != 0) {
+        CFI_Parser<LocalAddressSpace>::FDE_Info fdeInfo;
+        CFI_Parser<LocalAddressSpace>::CIE_Info cieInfo;
+        const char *message = CFI_Parser<LocalAddressSpace>::decodeFDE(
+                                LocalAddressSpace::sThisAddressSpace,
+                                (LocalAddressSpace::pint_t) fde, &fdeInfo, &cieInfo);
+        if (message == NULL) {
+          DwarfFDECache<LocalAddressSpace>::add((LocalAddressSpace::pint_t)mh_group,
+                                                fdeInfo.pcStart, fdeInfo.pcEnd,
+                                                fdeInfo.fdeStart);
+        } else {
+          _LIBUNWIND_DEBUG_LOG("__unw_add_dynamic_fde_list: bad fde: %s", message);
+        }
+    }
     fde = contentEnd;
   }
 }
 
 /// IPI: for __deregister_frame_info()
 void __unw_remove_dynamic_fde_list(unw_word_t fde) {
-  auto &addressSpace = LocalAddressSpace::sThisAddressSpace;
-  for (;;) {
-  	if (!check_memory((void*)fde))
-  		break;
-    addr_t p = fde;
-    addr_t length = (addr_t)addressSpace.get32(p);
-    p += 4;
-    addr_t contentEnd = p + length;
-    if (length == 0xffffffff) {
-      length = (addr_t)addressSpace.get64(p);
-      p += 8;
-      contentEnd = p + length;
-    }
-    if (length == 0)
-      break;
-    if (addressSpace.get32(p) != 0)
-      DwarfFDECache<LocalAddressSpace>::removeAllIn((LocalAddressSpace::pint_t)fde);
-    fde = contentEnd;
-  }
+  DwarfFDECache<LocalAddressSpace>::removeAllIn((LocalAddressSpace::pint_t)fde);
 }
 #endif // __HAIKU__
 #endif // defined(_LIBUNWIND_SUPPORT_DWARF_UNWIND)

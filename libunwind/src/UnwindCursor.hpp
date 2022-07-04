@@ -108,7 +108,7 @@ private:
   static entry *_buffer;
   static entry *_bufferUsed;
   static entry *_bufferEnd;
-  static entry _initialBuffer[_LIBUNWIND_INIT_FDE_CACHE_SIZE];
+  static entry _initialBuffer[64];
 };
 
 template <typename A>
@@ -121,10 +121,10 @@ DwarfFDECache<A>::_bufferUsed = _initialBuffer;
 
 template <typename A>
 typename DwarfFDECache<A>::entry *
-DwarfFDECache<A>::_bufferEnd = &_initialBuffer[_LIBUNWIND_INIT_FDE_CACHE_SIZE];
+DwarfFDECache<A>::_bufferEnd = &_initialBuffer[64];
 
 template <typename A>
-typename DwarfFDECache<A>::entry DwarfFDECache<A>::_initialBuffer[_LIBUNWIND_INIT_FDE_CACHE_SIZE];
+typename DwarfFDECache<A>::entry DwarfFDECache<A>::_initialBuffer[64];
 
 template <typename A>
 RWMutex DwarfFDECache<A>::_lock;
