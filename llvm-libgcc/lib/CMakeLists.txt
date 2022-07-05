@@ -42,30 +42,23 @@ set_target_properties(gcc_s.ver PROPERTIES
 add_library(libgcc_s SHARED blank.c)
 add_dependencies(libgcc_s gcc_s_ver)
 if(NOT LLVM_LIBGCC_IMITATE_NAME)
-set_target_properties(libgcc_s
-  PROPERTIES
-    LINKER_LANGUAGE C
-    OUTPUT_NAME "unwind"
-    VERSION "1.0"
-    SOVERSION "1"
-    POSITION_INDEPENDENT_CODE ON)
+  set_target_properties(libgcc_s
+    PROPERTIES
+      LINKER_LANGUAGE C
+      OUTPUT_NAME "unwind"
+      VERSION "1.0"
+      SOVERSION "1"
+      POSITION_INDEPENDENT_CODE ON)
 else()
-set_target_properties(libgcc_s
-  PROPERTIES
-    LINKER_LANGUAGE C
-    OUTPUT_NAME "gcc_s"
-    VERSION "1.0"
-    SOVERSION "1"
-    POSITION_INDEPENDENT_CODE ON)
+  set_target_properties(libgcc_s
+    PROPERTIES
+      LINKER_LANGUAGE C
+      OUTPUT_NAME "gcc_s"
+      VERSION "1.0"
+      SOVERSION "1"
+      POSITION_INDEPENDENT_CODE ON)
 endif()
 string(REGEX MATCH "[^-]+" LLVM_LIBGCC_TARGET_ARCH ${CMAKE_C_COMPILER_TARGET})
-target_link_libraries(libgcc_s PRIVATE
-  $<TARGET_OBJECTS:unwind_static>
-  $<TARGET_OBJECTS:clang_rt.builtins-${LLVM_LIBGCC_TARGET_ARCH}>
-)
-target_link_options(libgcc_s PRIVATE
-  -nostdlib
-  -Wl,--version-script,$<TARGET_PROPERTY:gcc_s.ver,OUTPUT_PATH>)
 
 if(HAIKU)
   find_file(HAIKU_CRTI
@@ -81,22 +74,40 @@ if(HAIKU)
     HINTS ${CMAKE_HAIKU_DEVELOP_LIB_DIRECTORIES}
   )
 
-  target_sources(libgcc_s PRIVATE
-    "../../compiler-rt/lib/crt/crtbegin.c"
-    "../../compiler-rt/lib/crt/crtend.c"
-  )
+  add_library(crtbegin OBJECT "../../compiler-rt/lib/crt/crtbegin.c")
+  add_library(crtend OBJECT "../../compiler-rt/lib/crt/crtend.c")
 
-  target_compile_definitions(libgcc_s PRIVATE
+  target_compile_definitions(crtbegin PRIVATE
+    -DCRT_HAS_INITFINI_ARRAY
+    -DEH_USE_FRAME_REGISTRY
+  )
+  target_compile_definitions(crtend PRIVATE
     -DCRT_HAS_INITFINI_ARRAY
     -DEH_USE_FRAME_REGISTRY
   )
 
+  # The position is important. It must be:
+  # crti.o -> crtbegin.o -> Some other stuff -> crtend.o -> crtn.o
+  # Incorrect configurations might lead to segfaults due to
+  # the .eh_frame section not having a terminating entry.
   target_link_libraries(libgcc_s PRIVATE
     ${HAIKU_CRTI}
+    $<TARGET_OBJECTS:crtbegin>
     ${HAIKU_INIT_TERM_DYN}
+    $<TARGET_OBJECTS:unwind_static>
+    $<TARGET_OBJECTS:clang_rt.builtins-${LLVM_LIBGCC_TARGET_ARCH}>
+    $<TARGET_OBJECTS:crtend>
     ${HAIKU_CRTN}
   )
+else()
+  target_link_libraries(libgcc_s PRIVATE
+    $<TARGET_OBJECTS:unwind_static>
+    $<TARGET_OBJECTS:clang_rt.builtins-${LLVM_LIBGCC_TARGET_ARCH}>
+  )
 endif(HAIKU)
+target_link_options(libgcc_s PRIVATE
+  -nostdlib
+  -Wl,--version-script,$<TARGET_PROPERTY:gcc_s.ver,OUTPUT_PATH>)
 
 check_library_exists(m sin "" LLVM_LIBGCC_HAS_LIBM)
 target_link_libraries(libgcc_s PRIVATE

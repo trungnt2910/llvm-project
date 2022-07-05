@@ -249,14 +249,7 @@ bool CFI_Parser<A>::findFDE(A &addressSpace, pint_t pc, pint_t ehSectionStart,
       uint32_t ciePointer = addressSpace.get32(p);
       pint_t cieStart = p - ciePointer;
       // Validate pointer to CIE is within section.
-#ifdef __HAIKU__
-      // In theory, the data passed to _register_frame_info should
-      // be the start of the .eh_frame section. However, for
-      // libunwind on Haiku it does NOT point to the start.
-      if (cieStart < ehSectionEnd) {
-#else
       if ((ehSectionStart <= cieStart) && (cieStart < ehSectionEnd)) {
-#endif
         if (parseCIE(addressSpace, cieStart, cieInfo) == NULL) {
           p += 4;
           // Parse pc begin and range.

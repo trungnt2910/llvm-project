@@ -289,9 +289,29 @@ void __unw_add_dynamic_fde_list(unw_word_t fde, void* ob) {
     // This is most likely to be called during image initialization.
     // Lazily remember the section address for later use.
     object* head = addressSpace.frame_info_objects;
-    obj->fde_start = (void*)fde;
+    obj->eh_frame_start = (void*)fde;
     obj->next = head;
     addressSpace.frame_info_objects = obj;
+
+    // On Haiku, the pointer may point to the first FDE
+    // instead of the real start of the .eh_frame section.
+    // This often means skipping a CIE (the first one).
+    addr_t p = fde;
+    addr_t length = (addr_t)addressSpace.get32(p);
+    p += 4;
+    if (length == 0xffffffff) {
+      length = (addr_t)addressSpace.get64(p);
+      p += 8;
+    }
+    if (length != 0) {
+      addr_t ciePointer = addressSpace.get32(p);
+      if (ciePointer != 0) {
+        addr_t cieStart = p - ciePointer;
+        if (cieStart < (addr_t)obj->eh_frame_start) {
+          obj->eh_frame_start = (void*)cieStart;
+        }
+      }
+    }
     return;
   }
   // For a list of FDEs, use the first FDE as the mh_group.

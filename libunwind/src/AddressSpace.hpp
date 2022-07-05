@@ -115,7 +115,7 @@ extern char __exidx_end;
 // The memory provided by __register_frame_info
 // It could be anything that fits into an array of 8 void pointers.
 struct object {
-  void* fde_start;
+  void* eh_frame_start;
   object* next;
 };
 
@@ -613,19 +613,14 @@ inline bool LocalAddressSpace::findUnwindSections(pint_t targetAddr,
     if ((pint_t)imgInfo.text <= targetAddr && targetAddr < (pint_t)imgInfo.text + (pint_t)imgInfo.text_size) {
       object* obj = frame_info_objects;
       while (obj != NULL) {
-        if (imgInfo.text <= obj->fde_start &&
-            obj->fde_start < (char *)imgInfo.text + imgInfo.text_size) {
+        if (imgInfo.text <= obj->eh_frame_start &&
+            obj->eh_frame_start < (char *)imgInfo.text + imgInfo.text_size) {
           // FDEs in libunwind are grouped based on dso_base.
-          info.dso_base = (uintptr_t)obj->fde_start;
-          info.dwarf_section = (uintptr_t)obj->fde_start;
+          info.dso_base = (uintptr_t)obj->eh_frame_start;
+          info.dwarf_section = (uintptr_t)obj->eh_frame_start;
           // We cannot accurately determine the length of the .eh_frame section
-          // in this context. However, we'll use the remaining text size.
-          // While enumerating FDEs in the section, in most scenarios,
-          // the loop will stop when reaching a zero-length FDE.
-          // For some Haiku binaries with a faulty .eh_frame section,
-          // the loop should stop before segfaulting.
-          info.dwarf_section_length =
-            (uintptr_t)(imgInfo.text_size - ((char *)obj->fde_start - (char *)imgInfo.text));
+          // in this context.
+          info.dwarf_section_length = UINTPTR_MAX;
           return true;
         }
         obj = obj->next;
