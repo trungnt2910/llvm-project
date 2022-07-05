@@ -43,12 +43,13 @@
   // For ARM EHABI, Bionic didn't implement dl_iterate_phdr until API 21. After
   // API 21, dl_iterate_phdr exists, but dl_unwind_find_exidx is much faster.
   #define _LIBUNWIND_USE_DL_UNWIND_FIND_EXIDX 1
+#elif defined(__HAIKU__)
+  #define _LIBUNWIND_SUPPORT_DWARF_UNWIND 1
+  #define _LIBUNWIND_USE_EH_FRAME_REGISTRY 1
 #else
-  #if !defined(__HAIKU__)
-    // Assume an ELF system with a dl_iterate_phdr function.
-    #define _LIBUNWIND_USE_DL_ITERATE_PHDR 1
-    #define _LIBUNWIND_SUPPORT_DWARF_INDEX 1
-  #endif
+  // Assume an ELF system with a dl_iterate_phdr function.
+  #define _LIBUNWIND_USE_DL_ITERATE_PHDR 1
+  #define _LIBUNWIND_SUPPORT_DWARF_INDEX 1
   #if !defined(_LIBUNWIND_ARM_EHABI)
     #define _LIBUNWIND_SUPPORT_DWARF_UNWIND 1
   #endif

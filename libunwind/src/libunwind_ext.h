@@ -51,7 +51,7 @@ extern void __unw_iterate_dwarf_unwind_cache(void (*func)(
 extern void __unw_add_dynamic_fde(unw_word_t fde);
 extern void __unw_remove_dynamic_fde(unw_word_t fde);
 
-#ifdef __HAIKU__
+#if defined(_LIBUNWIND_USE_EH_FRAME_REGISTRY)
 extern void __unw_add_dynamic_fde_list(unw_word_t fde, void* ob);
 extern void __unw_remove_dynamic_fde_list(unw_word_t fde);
 #endif

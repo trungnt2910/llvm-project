@@ -944,7 +944,7 @@ private:
   template <typename Registers> int stepThroughSigReturn(Registers &) {
     return UNW_STEP_END;
   }
-#elif defined(__HAIKU__)
+#elif defined(_LIBUNWIND_TARGET_HAIKU)
   bool setInfoForSigReturn();
   int stepThroughSigReturn();
 #endif
@@ -1203,7 +1203,7 @@ private:
   unw_proc_info_t  _info;
   bool             _unwindInfoMissing;
   bool             _isSignalFrame;
-#if defined(_LIBUNWIND_TARGET_LINUX) && defined(_LIBUNWIND_TARGET_AARCH64) || defined(__HAIKU__)
+#if defined(_LIBUNWIND_TARGET_LINUX) && defined(_LIBUNWIND_TARGET_AARCH64) || defined(_LIBUNWIND_TARGET_HAIKU)
   bool             _isSigReturn = false;
 #endif
 };
@@ -1900,7 +1900,7 @@ bool UnwindCursor<A, R>::getInfoFromSEH(pint_t pc) {
 
 template <typename A, typename R>
 void UnwindCursor<A, R>::setInfoBasedOnIPRegister(bool isReturnAddress) {
-#if defined(_LIBUNWIND_TARGET_LINUX) && defined(_LIBUNWIND_TARGET_AARCH64) || defined(__HAIKU__)
+#if defined(_LIBUNWIND_TARGET_LINUX) && defined(_LIBUNWIND_TARGET_AARCH64) || defined(_LIBUNWIND_TARGET_HAIKU)
   _isSigReturn = false;
 #endif
 
@@ -2002,7 +2002,7 @@ void UnwindCursor<A, R>::setInfoBasedOnIPRegister(bool isReturnAddress) {
   }
 #endif // #if defined(_LIBUNWIND_SUPPORT_DWARF_UNWIND)
 
-#if defined(_LIBUNWIND_TARGET_LINUX) && defined(_LIBUNWIND_TARGET_AARCH64) || defined(__HAIKU__)
+#if defined(_LIBUNWIND_TARGET_LINUX) && defined(_LIBUNWIND_TARGET_AARCH64) || defined(_LIBUNWIND_TARGET_HAIKU)
   if (setInfoForSigReturn())
     return;
 #endif
@@ -2071,7 +2071,7 @@ int UnwindCursor<A, R>::stepThroughSigReturn(Registers_arm64 &) {
   _isSignalFrame = true;
   return UNW_STEP_SUCCESS;
 }
-#elif defined(__HAIKU__)
+#elif defined(_LIBUNWIND_TARGET_HAIKU)
 
 #include <commpage_defs.h>
 #include <signal.h>
@@ -2140,7 +2140,7 @@ int UnwindCursor<A, R>::step() {
 
   // Use unwinding info to modify register set as if function returned.
   int result;
-#if defined(_LIBUNWIND_TARGET_LINUX) && defined(_LIBUNWIND_TARGET_AARCH64) || defined(__HAIKU__)
+#if defined(_LIBUNWIND_TARGET_LINUX) && defined(_LIBUNWIND_TARGET_AARCH64) || defined(_LIBUNWIND_TARGET_HAIKU)
   if (_isSigReturn) {
     result = this->stepThroughSigReturn();
   } else

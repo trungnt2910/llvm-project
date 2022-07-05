@@ -280,19 +280,17 @@ void __unw_remove_dynamic_fde(unw_word_t fde) {
   DwarfFDECache<LocalAddressSpace>::removeAllIn((LocalAddressSpace::pint_t)fde);
 }
 
-#ifdef __HAIKU__
+#if defined(_LIBUNWIND_USE_EH_FRAME_REGISTRY)
 /// IPI: for __register_frame_info()
-void __unw_add_dynamic_fde_list(unw_word_t fde, void* ob) {
+void __unw_add_dynamic_fde_list(unw_word_t fde, void *ob) {
   auto &addressSpace = LocalAddressSpace::sThisAddressSpace;
-  object* obj = (object*)ob;
-  if (obj != NULL) {
+  if (ob != NULL) {
+    FrameRegistry::object *obj = (FrameRegistry::object *)ob;
     // This is most likely to be called during image initialization.
     // Lazily remember the section address for later use.
-    object* head = addressSpace.frame_info_objects;
-    obj->eh_frame_start = (void*)fde;
-    obj->next = head;
-    addressSpace.frame_info_objects = obj;
-
+    obj->group = (void *)fde;
+    obj->eh_frame_start = (void *)fde;
+    obj->next = NULL;
     // On Haiku, the pointer may point to the first FDE
     // instead of the real start of the .eh_frame section.
     // This often means skipping a CIE (the first one).
@@ -308,10 +306,11 @@ void __unw_add_dynamic_fde_list(unw_word_t fde, void* ob) {
       if (ciePointer != 0) {
         addr_t cieStart = p - ciePointer;
         if (cieStart < (addr_t)obj->eh_frame_start) {
-          obj->eh_frame_start = (void*)cieStart;
+          obj->eh_frame_start = (void *)cieStart;
         }
       }
     }
+    TheFrameRegistry.add(obj);
     return;
   }
   // For a list of FDEs, use the first FDE as the mh_group.
@@ -352,8 +351,9 @@ void __unw_add_dynamic_fde_list(unw_word_t fde, void* ob) {
 /// IPI: for __deregister_frame_info()
 void __unw_remove_dynamic_fde_list(unw_word_t fde) {
   DwarfFDECache<LocalAddressSpace>::removeAllIn((LocalAddressSpace::pint_t)fde);
+  TheFrameRegistry.remove((FrameRegistry::pint_t)fde);
 }
-#endif // __HAIKU__
+#endif // defined(_LIBUNWIND_USE_EH_FRAME_REGISTRY)
 #endif // defined(_LIBUNWIND_SUPPORT_DWARF_UNWIND)
 #endif // !defined(__USING_SJLJ_EXCEPTIONS__)
 

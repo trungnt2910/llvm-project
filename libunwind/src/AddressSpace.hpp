@@ -112,13 +112,6 @@ extern char __exidx_end;
 
 #include <kernel/image.h>
 
-// The memory provided by __register_frame_info
-// It could be anything that fits into an array of 8 void pointers.
-struct object {
-  void* eh_frame_start;
-  object* next;
-};
-
 #endif
 
 namespace libunwind {
@@ -201,10 +194,6 @@ public:
                         unw_word_t *offset);
   bool findUnwindSections(pint_t targetAddr, UnwindInfoSections &info);
   bool findOtherFDE(pint_t targetAddr, pint_t &fde);
-
-#ifdef __HAIKU__
-  object* frame_info_objects = NULL;
-#endif
 
   static LocalAddressSpace sThisAddressSpace;
 };
@@ -512,6 +501,12 @@ static int findUnwindSectionsByPhdr(struct dl_phdr_info *pinfo,
 
 #endif  // defined(_LIBUNWIND_USE_DL_ITERATE_PHDR)
 
+#if defined(_LIBUNWIND_USE_EH_FRAME_REGISTRY)
+#include "FrameRegistry.hpp"
+
+static FrameRegistry TheFrameRegistry;
+#endif
+
 
 inline bool LocalAddressSpace::findUnwindSections(pint_t targetAddr,
                                                   UnwindInfoSections &info) {
@@ -606,24 +601,22 @@ inline bool LocalAddressSpace::findUnwindSections(pint_t targetAddr,
   dl_iterate_cb_data cb_data = {this, &info, targetAddr};
   int found = dl_iterate_phdr(findUnwindSectionsByPhdr, &cb_data);
   return static_cast<bool>(found);
-#elif defined(__HAIKU__)
+#elif defined(_LIBUNWIND_USE_EH_FRAME_REGISTRY) && defined(__HAIKU__)
   image_info imgInfo;
   int cookie = 0;
   while (get_next_image_info(0, &cookie, &imgInfo) == B_OK) {
     if ((pint_t)imgInfo.text <= targetAddr && targetAddr < (pint_t)imgInfo.text + (pint_t)imgInfo.text_size) {
-      object* obj = frame_info_objects;
-      while (obj != NULL) {
-        if (imgInfo.text <= obj->eh_frame_start &&
-            obj->eh_frame_start < (char *)imgInfo.text + imgInfo.text_size) {
-          // FDEs in libunwind are grouped based on dso_base.
-          info.dso_base = (uintptr_t)obj->eh_frame_start;
-          info.dwarf_section = (uintptr_t)obj->eh_frame_start;
-          // We cannot accurately determine the length of the .eh_frame section
-          // in this context.
-          info.dwarf_section_length = UINTPTR_MAX;
-          return true;
-        }
-        obj = obj->next;
+      FrameRegistry::object *obj = TheFrameRegistry.find(
+          (FrameRegistry::pint_t)imgInfo.text,
+          (FrameRegistry::pint_t)imgInfo.text + (FrameRegistry::pint_t)imgInfo.text_size);
+      if (obj != NULL) {
+        // FDEs in libunwind are grouped based on dso_base.
+        info.dso_base = (uintptr_t)obj->group;
+        info.dwarf_section = (uintptr_t)obj->eh_frame_start;
+        // We cannot accurately determine the length of the .eh_frame section
+        // in this context.
+        info.dwarf_section_length = UINTPTR_MAX;
+        return true;
       }
     }
   }

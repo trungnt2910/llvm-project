@@ -40,6 +40,7 @@ set(LIBUNWIND_HEADERS
     DwarfParser.hpp
     EHHeaderParser.hpp
     FrameHeaderCache.hpp
+    FrameRegistry.hpp
     libunwind_ext.h
     Registers.hpp
     RWMutex.hpp
@@ -102,6 +103,18 @@ if (APPLE)
     add_link_flags("-current_version ${LIBUNWIND_VERSION}" "/usr/lib/libSystem.B.dylib")
   endif ()
 endif ()
+
+if (HAIKU)
+  execute_process(COMMAND finddir B_SYSTEM_HEADERS_DIRECTORY
+                  OUTPUT_VARIABLE LIBUNWIND_HAIKU_PRIVATE_HEADERS
+  )
+  set(LIBUNWIND_HAIKU_PRIVATE_HEADERS "${LIBUNWIND_HAIKU_PRIVATE_HEADERS}/private/system")
+
+  include_directories([SYSTEM] "${LIBUNWIND_HAIKU_PRIVATE_HEADERS}")
+  if (${LIBUNWIND_TARGET_TRIPLE} MATCHES "^x86_64")
+    include_directories([SYSTEM] "${LIBUNWIND_HAIKU_PRIVATE_HEADERS}/arch/x86_64")
+  endif()
+endif()
 
 string(REPLACE ";" " " LIBUNWIND_COMPILE_FLAGS "${LIBUNWIND_COMPILE_FLAGS}")
 string(REPLACE ";" " " LIBUNWIND_CXX_FLAGS "${LIBUNWIND_CXX_FLAGS}")
