@@ -646,7 +646,7 @@ template <typename A, typename R>
 bool UnwindCursor<A, R>::validReg(int regNum) {
   if (regNum == UNW_REG_IP || regNum == UNW_REG_SP) return true;
 #if defined(_LIBUNWIND_TARGET_X86_64)
-  if (regNum >= UNW_X86_64_RAX && regNum <= UNW_X86_64_R15) return true;
+  if (regNum >= UNW_X86_64_RAX && regNum <= UNW_x86_64_RIP) return true;
 #elif defined(_LIBUNWIND_TARGET_ARM)
   if (regNum >= UNW_ARM_R0 && regNum <= UNW_ARM_R15) return true;
 #elif defined(_LIBUNWIND_TARGET_AARCH64)
@@ -659,7 +659,8 @@ template <typename A, typename R>
 unw_word_t UnwindCursor<A, R>::getReg(int regNum) {
   switch (regNum) {
 #if defined(_LIBUNWIND_TARGET_X86_64)
-  case UNW_REG_IP: return _msContext.Rip;
+  case UNW_REG_IP:
+  case UNW_x86_64_RIP: return _msContext.Rip;
   case UNW_X86_64_RAX: return _msContext.Rax;
   case UNW_X86_64_RDX: return _msContext.Rdx;
   case UNW_X86_64_RCX: return _msContext.Rcx;
@@ -709,7 +710,8 @@ template <typename A, typename R>
 void UnwindCursor<A, R>::setReg(int regNum, unw_word_t value) {
   switch (regNum) {
 #if defined(_LIBUNWIND_TARGET_X86_64)
-  case UNW_REG_IP: _msContext.Rip = value; break;
+  case UNW_REG_IP:
+  case UNW_x86_64_RIP: _msContext.Rip = value; break;
   case UNW_X86_64_RAX: _msContext.Rax = value; break;
   case UNW_X86_64_RDX: _msContext.Rdx = value; break;
   case UNW_X86_64_RCX: _msContext.Rcx = value; break;
@@ -942,7 +944,7 @@ private:
   template <typename Registers> int stepThroughSigReturn(Registers &) {
     return UNW_STEP_END;
   }
-#elif defined(__HAIKU__)
+#elif defined(_LIBUNWIND_TARGET_HAIKU) && defined(_LIBUNWIND_TARGET_X86_64)
   bool setInfoForSigReturn();
   int stepThroughSigReturn();
 #endif
@@ -1201,7 +1203,8 @@ private:
   unw_proc_info_t  _info;
   bool             _unwindInfoMissing;
   bool             _isSignalFrame;
-#if defined(_LIBUNWIND_TARGET_LINUX) && defined(_LIBUNWIND_TARGET_AARCH64) || defined(__HAIKU__)
+#if defined(_LIBUNWIND_TARGET_LINUX) && defined(_LIBUNWIND_TARGET_AARCH64) \
+    || defined(_LIBUNWIND_TARGET_HAIKU) && defined(_LIBUNWIND_TARGET_X86_64)
   bool             _isSigReturn = false;
 #endif
 };
@@ -1898,7 +1901,8 @@ bool UnwindCursor<A, R>::getInfoFromSEH(pint_t pc) {
 
 template <typename A, typename R>
 void UnwindCursor<A, R>::setInfoBasedOnIPRegister(bool isReturnAddress) {
-#if defined(_LIBUNWIND_TARGET_LINUX) && defined(_LIBUNWIND_TARGET_AARCH64) || defined(__HAIKU__)
+#if defined(_LIBUNWIND_TARGET_LINUX) && defined(_LIBUNWIND_TARGET_AARCH64) \
+    || defined(_LIBUNWIND_TARGET_HAIKU) && defined(_LIBUNWIND_TARGET_X86_64)
   _isSigReturn = false;
 #endif
 
@@ -2000,7 +2004,8 @@ void UnwindCursor<A, R>::setInfoBasedOnIPRegister(bool isReturnAddress) {
   }
 #endif // #if defined(_LIBUNWIND_SUPPORT_DWARF_UNWIND)
 
-#if defined(_LIBUNWIND_TARGET_LINUX) && defined(_LIBUNWIND_TARGET_AARCH64) || defined(__HAIKU__)
+#if defined(_LIBUNWIND_TARGET_LINUX) && defined(_LIBUNWIND_TARGET_AARCH64) \
+    || defined(_LIBUNWIND_TARGET_HAIKU) && defined(_LIBUNWIND_TARGET_X86_64)
   if (setInfoForSigReturn())
     return;
 #endif
@@ -2069,7 +2074,7 @@ int UnwindCursor<A, R>::stepThroughSigReturn(Registers_arm64 &) {
   _isSignalFrame = true;
   return UNW_STEP_SUCCESS;
 }
-#elif defined(__HAIKU__)
+#elif defined(_LIBUNWIND_TARGET_HAIKU) && defined(_LIBUNWIND_TARGET_X86_64)
 
 #include <commpage_defs.h>
 #include <signal.h>
@@ -2082,11 +2087,11 @@ template <typename A, typename R>
 bool UnwindCursor<A, R>::setInfoForSigReturn() {
 #if defined(_LIBUNWIND_TARGET_X86_64)
   addr_t signal_handler = (((addr_t*)__gCommPageAddress)[COMMPAGE_ENTRY_X86_SIGNAL_HANDLER] + (addr_t)__gCommPageAddress);
-	addr_t signal_handler_ret = signal_handler + 45;
+  addr_t signal_handler_ret = signal_handler + 45;
 #endif
   pint_t pc = static_cast<pint_t>(this->getReg(UNW_REG_IP));
   if (pc == signal_handler_ret) {
-  	//printf("signal frame detected\n");
+    //printf("signal frame detected\n");
     _info = {};
     _info.start_ip = signal_handler;
     _info.end_ip = signal_handler_ret;
@@ -2098,16 +2103,16 @@ bool UnwindCursor<A, R>::setInfoForSigReturn() {
 
 template <typename A, typename R>
 int UnwindCursor<A, R>::stepThroughSigReturn() {
-	//printf("stepThroughSigReturn\n");
+  //printf("stepThroughSigReturn\n");
   _isSignalFrame = true;
   pint_t sp = _registers.getSP();
- // printf("sp: %p\n", (void*)sp);
+  // printf("sp: %p\n", (void*)sp);
 #if defined(_LIBUNWIND_TARGET_X86_64)
   vregs *regs = (vregs*)(sp + 0x70);
   //printf("&regs: %p\n", regs);
- 
+
   _registers.setRegister(UNW_REG_IP, regs->rip);
-  _registers.setRegister(UNW_REG_SP, regs->rsp);  
+  _registers.setRegister(UNW_REG_SP, regs->rsp);
   _registers.setRegister(UNW_X86_64_RAX, regs->rax);
   _registers.setRegister(UNW_X86_64_RDX, regs->rdx);
   _registers.setRegister(UNW_X86_64_RCX, regs->rcx);
@@ -2138,7 +2143,8 @@ int UnwindCursor<A, R>::step() {
 
   // Use unwinding info to modify register set as if function returned.
   int result;
-#if defined(_LIBUNWIND_TARGET_LINUX) && defined(_LIBUNWIND_TARGET_AARCH64) || defined(__HAIKU__)
+#if defined(_LIBUNWIND_TARGET_LINUX) && defined(_LIBUNWIND_TARGET_AARCH64) \
+    || defined(_LIBUNWIND_TARGET_HAIKU) && defined(_LIBUNWIND_TARGET_X86_64)
   if (_isSigReturn) {
     result = this->stepThroughSigReturn();
   } else

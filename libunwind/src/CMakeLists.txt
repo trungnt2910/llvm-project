@@ -103,6 +103,32 @@ if (APPLE)
   endif ()
 endif ()
 
+if (HAIKU)
+  add_library_flags_if(LIBUNWIND_HAS_ROOT_LIB root)
+
+  add_library_flags_if(LIBUNWIND_HAS_BSD_LIB bsd)
+  add_compile_flags_if(LIBUNWIND_HAS_BSD_LIB -D_DEFAULT_SOURCE=1)
+  add_compile_flags_if(LIBUNWIND_HAS_BSD_LIB -D_LIBUNWIND_USE_HAIKU_BSD_LIB=1)
+
+  add_compile_flags("-DPT_GNU_EH_FRAME=PT_EH_FRAME")
+
+  find_path(LIBUNWIND_HAIKU_PRIVATE_HEADERS
+            "commpage_defs.h"
+            PATHS ${CMAKE_SYSTEM_INCLUDE_PATH}
+            PATH_SUFFIXES "/private/system"
+            NO_DEFAULT_PATH
+            REQUIRED)
+
+  include_directories(SYSTEM "${LIBUNWIND_HAIKU_PRIVATE_HEADERS}")
+  if (LIBUNWIND_TARGET_TRIPLE)
+    if (${LIBUNWIND_TARGET_TRIPLE} MATCHES "^x86_64")
+      include_directories(SYSTEM "${LIBUNWIND_HAIKU_PRIVATE_HEADERS}/arch/x86_64")
+    endif()
+  else()
+    include_directories(SYSTEM "${LIBUNWIND_HAIKU_PRIVATE_HEADERS}/arch/${CMAKE_SYSTEM_PROCESSOR}")
+  endif()
+endif()
+
 string(REPLACE ";" " " LIBUNWIND_COMPILE_FLAGS "${LIBUNWIND_COMPILE_FLAGS}")
 string(REPLACE ";" " " LIBUNWIND_CXX_FLAGS "${LIBUNWIND_CXX_FLAGS}")
 string(REPLACE ";" " " LIBUNWIND_C_FLAGS "${LIBUNWIND_C_FLAGS}")

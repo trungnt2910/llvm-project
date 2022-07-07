@@ -339,7 +339,7 @@ inline bool Registers_x86_64::validRegister(int regNum) const {
     return true;
   if (regNum < 0)
     return false;
-  if (regNum > 15)
+  if (regNum > 16)
     return false;
   return true;
 }
@@ -382,6 +382,8 @@ inline uint64_t Registers_x86_64::getRegister(int regNum) const {
     return _registers.__r14;
   case UNW_X86_64_R15:
     return _registers.__r15;
+  case UNW_X86_64_RIP:
+    return _registers.__rip;
   }
   _LIBUNWIND_ABORT("unsupported x86_64 register");
 }
@@ -442,6 +444,9 @@ inline void Registers_x86_64::setRegister(int regNum, uint64_t value) {
   case UNW_X86_64_R15:
     _registers.__r15 = value;
     return;
+  case UNW_X86_64_RIP:
+    _registers.__rip = value;
+    return;
   }
   _LIBUNWIND_ABORT("unsupported x86_64 register");
 }
@@ -484,6 +489,8 @@ inline const char *Registers_x86_64::getRegisterName(int regNum) {
     return "r14";
   case UNW_X86_64_R15:
     return "r15";
+  case UNW_X86_64_RIP:
+    return "rip";
   case UNW_X86_64_XMM0:
     return "xmm0";
   case UNW_X86_64_XMM1:
