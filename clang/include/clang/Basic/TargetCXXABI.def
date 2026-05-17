@@ -122,6 +122,9 @@ ITANIUM_CXXABI(XL, "xl")
 /// Only scattered and incomplete official documentation exists.
 MICROSOFT_CXXABI(Microsoft, "microsoft")
 
+/// The legacy GCC 2.x C++ ABI.
+CXXABI(GCC2, "gcc2")
+
 #undef CXXABI
 #undef ITANIUM_CXXABI
 #undef MICROSOFT_CXXABI

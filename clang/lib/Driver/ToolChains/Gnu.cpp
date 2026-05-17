@@ -327,7 +327,17 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   ToolChain.addExtraOpts(CmdArgs);
 
-  CmdArgs.push_back("--eh-frame-hdr");
+  bool HasNoEHFrameHdr = false;
+  for (const auto *A : Args.filtered(options::OPT_Wl_COMMA)) {
+    for (StringRef Val : A->getValues()) {
+      if (Val == "--no-eh-frame-hdr")
+        HasNoEHFrameHdr = true;
+    }
+  }
+  if (!HasNoEHFrameHdr)
+    CmdArgs.push_back("--eh-frame-hdr");
+  else
+    CmdArgs.push_back("--traditional-format");
 
   if (const char *LDMOption = getLDMOption(ToolChain.getTriple(), Args)) {
     CmdArgs.push_back("-m");

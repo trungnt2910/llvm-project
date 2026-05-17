@@ -90,6 +90,8 @@ void CodeGenTargetMachineImpl::initAsmInfo() {
   if (Options.ExceptionModel != ExceptionHandling::None)
     TmpAsmInfo->setExceptionsType(Options.ExceptionModel);
 
+  TmpAsmInfo->setUsesLegacyDwarf2EH(Options.MCOptions.LegacyDwarf2EH);
+
   AsmInfo.reset(TmpAsmInfo);
 }
 

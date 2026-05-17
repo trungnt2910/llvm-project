@@ -64,6 +64,8 @@ public:
 
   bool ImplicitMapSyms = false;
 
+  bool LegacyDwarf2EH = false;
+
   // If true, prefer R_X86_64_[REX_]GOTPCRELX to R_X86_64_GOTPCREL on x86-64
   // ELF.
   bool X86RelaxRelocations = true;

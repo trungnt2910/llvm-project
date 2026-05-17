@@ -3726,6 +3726,10 @@ void CompilerInvocationBase::GenerateLangArgs(const LangOptions &Opts,
       GenerateArg(Consumer, OPT_fsanitize_ignore_for_ubsan_feature_EQ,
                   Sanitizer);
 
+    if (Opts.CXXABI)
+      GenerateArg(Consumer, OPT_fcxx_abi_EQ,
+                  TargetCXXABI::getSpelling(*Opts.CXXABI));
+
     return;
   }
 
@@ -4024,6 +4028,19 @@ bool CompilerInvocation::ParseLangArgs(LangOptions &Opts, ArgList &Args,
         "-fsanitize-ignore-for-ubsan-feature=",
         Args.getAllArgValues(OPT_fsanitize_ignore_for_ubsan_feature_EQ), Diags,
         Opts.UBSanFeatureIgnoredSanitize);
+
+    StringRef CXXABI = Args.getLastArgValue(OPT_fcxx_abi_EQ);
+    if (!CXXABI.empty()) {
+      if (!TargetCXXABI::isABI(CXXABI)) {
+        Diags.Report(diag::err_invalid_cxx_abi) << CXXABI;
+      } else {
+        auto Kind = TargetCXXABI::getKind(CXXABI);
+        if (!TargetCXXABI::isSupportedCXXABI(T, Kind))
+          Diags.Report(diag::err_unsupported_cxx_abi) << CXXABI << T.str();
+        else
+          Opts.CXXABI = Kind;
+      }
+    }
 
     return Diags.getNumErrors() == NumErrorsBefore;
   }

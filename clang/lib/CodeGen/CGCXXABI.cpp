@@ -312,7 +312,7 @@ llvm::Constant *CGCXXABI::getMemberPointerAdjustment(const CastExpr *E) {
 llvm::BasicBlock *
 CGCXXABI::EmitCtorCompleteObjectHandler(CodeGenFunction &CGF,
                                         const CXXRecordDecl *RD) {
-  if (CGM.getTarget().getCXXABI().hasConstructorVariants())
+  if (TargetCXXABI(CGM.getContext().getCXXABIKind()).hasConstructorVariants())
     llvm_unreachable("shouldn't be called in this ABI");
 
   ErrorUnsupportedABI(CGF, "complete object detection in ctor");
@@ -345,6 +345,11 @@ CGCXXABI::emitTerminateForUnexpectedException(CodeGenFunction &CGF,
 
 CatchTypeInfo CGCXXABI::getCatchAllTypeInfo() {
   return CatchTypeInfo{nullptr, 0};
+}
+
+llvm::Value *CGCXXABI::EmitStaticTypeid(CodeGenFunction &CGF, QualType Ty,
+                                        llvm::Type *StdTypeInfoPtrTy) {
+  return CGF.CGM.GetAddrOfRTTIDescriptor(Ty);
 }
 
 std::vector<CharUnits> CGCXXABI::getVBPtrOffsets(const CXXRecordDecl *RD) {

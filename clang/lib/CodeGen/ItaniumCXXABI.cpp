@@ -603,6 +603,9 @@ CodeGen::CGCXXABI *CodeGen::CreateItaniumCXXABI(CodeGenModule &CGM) {
 
   case TargetCXXABI::Microsoft:
     llvm_unreachable("Microsoft ABI is not Itanium-based");
+
+  case TargetCXXABI::GCC2:
+    llvm_unreachable("GCC2 ABI is not Itanium-based");
   }
   llvm_unreachable("bad ABI kind");
 }

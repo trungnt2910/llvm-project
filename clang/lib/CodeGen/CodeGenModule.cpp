@@ -107,6 +107,8 @@ static CGCXXABI *createCXXABI(CodeGenModule &CGM) {
     return CreateItaniumCXXABI(CGM);
   case TargetCXXABI::Microsoft:
     return CreateMicrosoftCXXABI(CGM);
+  case TargetCXXABI::GCC2:
+    return CreateGCC2CXXABI(CGM);
   }
 
   llvm_unreachable("invalid C++ ABI kind");
@@ -2417,7 +2419,7 @@ StringRef CodeGenModule::getMangledName(GlobalDecl GD) {
   // Some ABIs don't have constructor variants.  Make sure that base and
   // complete constructors get mangled the same.
   if (const auto *CD = dyn_cast<CXXConstructorDecl>(CanonicalGD.getDecl())) {
-    if (!getTarget().getCXXABI().hasConstructorVariants()) {
+    if (!TargetCXXABI(getContext().getCXXABIKind()).hasConstructorVariants()) {
       CXXCtorType OrigCtorType = GD.getCtorType();
       assert(OrigCtorType == Ctor_Base || OrigCtorType == Ctor_Complete);
       if (OrigCtorType == Ctor_Base)

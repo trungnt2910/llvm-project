@@ -75,8 +75,11 @@ public:
 /// Creates an instance of a C++ ABI class.
 CXXABI *CreateItaniumCXXABI(ASTContext &Ctx);
 CXXABI *CreateMicrosoftCXXABI(ASTContext &Ctx);
+CXXABI *CreateGCC2CXXABI(ASTContext &Ctx);
 std::unique_ptr<MangleNumberingContext>
 createItaniumNumberingContext(MangleContext *);
+std::unique_ptr<MangleNumberingContext>
+createGCC2NumberingContext(MangleContext *);
 }
 
 #endif

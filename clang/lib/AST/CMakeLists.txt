@@ -96,6 +96,8 @@ add_clang_library(clangAST
   ByteCode/MemberPointer.cpp
   ByteCode/InterpShared.cpp
   HLSLResource.cpp
+  GCC2CXXABI.cpp
+  GCC2Mangle.cpp
   ItaniumCXXABI.cpp
   ItaniumMangle.cpp
   JSONNodeDumper.cpp

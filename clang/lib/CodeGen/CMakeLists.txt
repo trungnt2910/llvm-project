@@ -109,6 +109,7 @@ add_clang_library(clangCodeGen
   CodeGenTypes.cpp
   ConstantInitBuilder.cpp
   CoverageMappingGen.cpp
+  GCC2CXXABI.cpp
   ItaniumCXXABI.cpp
   HLSLBufferLayoutBuilder.cpp
   LinkInModulesPass.cpp

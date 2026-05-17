@@ -876,6 +876,9 @@ void ItaniumRecordLayoutBuilder::DeterminePrimaryBase(const CXXRecordDecl *RD) {
     }
   }
 
+  if (Context.getCXXABIKind() == TargetCXXABI::GCC2)
+    return;
+
   // Under the Itanium ABI, if there is no non-virtual primary base class,
   // try to compute the primary virtual base.  The primary virtual base is
   // the first nearly empty virtual base that is not an indirect primary
@@ -1050,19 +1053,36 @@ void ItaniumRecordLayoutBuilder::LayoutNonVirtualBases(
   // If this class needs a vtable/vf-table and didn't get one from a
   // primary base, add it in now.
   } else if (RD->isDynamicClass()) {
-    assert(DataSize == 0 && "Vtable pointer must be at offset zero!");
-    CharUnits PtrWidth = Context.toCharUnitsFromBits(
-        Context.getTargetInfo().getPointerWidth(LangAS::Default));
-    CharUnits PtrAlign = Context.toCharUnitsFromBits(
-        Context.getTargetInfo().getPointerAlign(LangAS::Default));
-    EnsureVTablePointerAlignment(PtrAlign);
-    HasOwnVFPtr = true;
+    bool NeedsVFPtr = true;
+    if (Context.getCXXABIKind() == TargetCXXABI::GCC2) {
+      bool HasNewVirtualFunctions = false;
+      for (const auto *MD : RD->methods()) {
+        if (MD->isVirtual() && MD->size_overridden_methods() == 0) {
+          HasNewVirtualFunctions = true;
+          break;
+        }
+      }
+      if (!HasNewVirtualFunctions && RD->getNumVBases() > 0)
+        NeedsVFPtr = false;
+    }
+    if (NeedsVFPtr) {
+      assert((DataSize == 0 || Context.getCXXABIKind() == TargetCXXABI::GCC2) &&
+             "Vtable pointer must be at offset zero!");
+      CharUnits PtrWidth = Context.toCharUnitsFromBits(
+          Context.getTargetInfo().getPointerWidth(LangAS::Default));
+      CharUnits PtrAlign = Context.toCharUnitsFromBits(
+          Context.getTargetInfo().getPointerAlign(LangAS::Default));
+      EnsureVTablePointerAlignment(PtrAlign);
+      HasOwnVFPtr = true;
 
-    assert(!IsUnion && "Unions cannot be dynamic classes.");
-    HandledFirstNonOverlappingEmptyField = true;
+      assert(!IsUnion && "Unions cannot be dynamic classes.");
+      HandledFirstNonOverlappingEmptyField = true;
 
-    setSize(getSize() + PtrWidth);
-    setDataSize(getSize());
+      if (Context.getCXXABIKind() != TargetCXXABI::GCC2) {
+        setSize(getSize() + PtrWidth);
+        setDataSize(getSize());
+      }
+    }
   }
 
   // Now lay out the non-virtual bases.
@@ -1376,10 +1396,28 @@ void ItaniumRecordLayoutBuilder::Layout(const RecordDecl *D) {
 void ItaniumRecordLayoutBuilder::Layout(const CXXRecordDecl *RD) {
   InitializeLayout(RD);
 
+  if (Context.getCXXABIKind() == TargetCXXABI::GCC2) {
+    CharUnits PtrWidth = Context.toCharUnitsFromBits(
+        Context.getTargetInfo().getPointerWidth(LangAS::Default));
+    for (const auto &I : RD->vbases()) {
+      setSize(getSize() + PtrWidth);
+      setDataSize(getSize());
+    }
+  }
+
   // Lay out the vtable and the non-virtual bases.
   LayoutNonVirtualBases(RD);
 
   LayoutFields(RD);
+
+  if (HasOwnVFPtr && Context.getCXXABIKind() == TargetCXXABI::GCC2) {
+    CharUnits PtrWidth = Context.toCharUnitsFromBits(
+        Context.getTargetInfo().getPointerWidth(LangAS::Default));
+    CharUnits PtrAlign = Context.toCharUnitsFromBits(
+        Context.getTargetInfo().getPointerAlign(LangAS::Default));
+    setSize(getSize().alignTo(PtrAlign) + PtrWidth);
+    setDataSize(getSize());
+  }
 
   NonVirtualSize = Context.toCharUnitsFromBits(
       llvm::alignTo(getSizeInBits(), Context.getTargetInfo().getCharAlign()));

@@ -1177,7 +1177,7 @@ void ItaniumVTableBuilder::ComputeThisAdjustments() {
 
     SetThisAdjustmentThunk(VTableIndex);
 
-    if (isa<CXXDestructorDecl>(MD)) {
+    if (isa<CXXDestructorDecl>(MD) && Context.getCXXABIKind() != TargetCXXABI::GCC2) {
       // Add an adjustment for the deleting destructor as well.
       SetThisAdjustmentThunk(VTableIndex + 1);
     }
@@ -1206,6 +1206,10 @@ void ItaniumVTableBuilder::ComputeThisAdjustments() {
       MD = Component.getDestructorDecl();
       break;
     case VTableComponent::CK_DeletingDtorPointer:
+      if (Context.getCXXABIKind() == TargetCXXABI::GCC2) {
+        MD = Component.getDestructorDecl();
+        break;
+      }
       // We've already added the thunk when we saw the complete dtor pointer.
       continue;
     }
@@ -1307,6 +1311,13 @@ ThisAdjustment ItaniumVTableBuilder::ComputeThisAdjustment(
   ThisAdjustment Adjustment;
 
   if (Offset.VirtualBase) {
+    if (Context.getCXXABIKind() == TargetCXXABI::GCC2) {
+      const ASTRecordLayout &Layout = Context.getASTRecordLayout(MostDerivedClass);
+      CharUnits VBaseOffset = Layout.getVBaseClassOffset(Offset.VirtualBase);
+      Adjustment.NonVirtual = (-VBaseOffset + Offset.NonVirtualOffset).getQuantity();
+      return Adjustment;
+    }
+
     // Get the vcall offset map for this virtual base.
     VCallOffsetMap &VCallOffsets = VCallOffsetsForVBases[Offset.VirtualBase];
 
@@ -1340,9 +1351,13 @@ void ItaniumVTableBuilder::AddMethod(const CXXMethodDecl *MD,
     assert(ReturnAdjustment.isEmpty() &&
            "Destructor can't have return adjustment!");
 
-    // Add both the complete destructor and the deleting destructor.
-    Components.push_back(VTableComponent::MakeCompleteDtor(DD));
-    Components.push_back(VTableComponent::MakeDeletingDtor(DD));
+    if (Context.getCXXABIKind() == TargetCXXABI::GCC2) {
+      Components.push_back(VTableComponent::MakeDeletingDtor(DD));
+    } else {
+      // Add both the complete destructor and the deleting destructor.
+      Components.push_back(VTableComponent::MakeCompleteDtor(DD));
+      Components.push_back(VTableComponent::MakeDeletingDtor(DD));
+    }
   } else {
     // Add the return adjustment if necessary.
     if (!ReturnAdjustment.isEmpty())
@@ -1694,7 +1709,8 @@ void ItaniumVTableBuilder::LayoutPrimaryAndSecondaryVTables(
   VCallAndVBaseOffsetBuilder Builder(MostDerivedClass, LayoutClass, &Overriders,
                                      Base, BaseIsVirtualInLayoutClass,
                                      OffsetInLayoutClass);
-  Components.append(Builder.components_begin(), Builder.components_end());
+  if (Context.getCXXABIKind() != TargetCXXABI::GCC2)
+    Components.append(Builder.components_begin(), Builder.components_end());
 
   // Check if we need to add these vcall offsets.
   if (BaseIsVirtualInLayoutClass && !Builder.getVCallOffsets().empty()) {
@@ -1732,12 +1748,21 @@ void ItaniumVTableBuilder::LayoutPrimaryAndSecondaryVTables(
       const CXXMethodDecl *MD = I.first;
       const MethodInfo &MI = I.second;
       if (const CXXDestructorDecl *DD = dyn_cast<CXXDestructorDecl>(MD)) {
-        MethodVTableIndices[GlobalDecl(DD, Dtor_Complete)]
-            = MI.VTableIndex - AddressPoint;
-        MethodVTableIndices[GlobalDecl(DD, Dtor_Deleting)]
-            = MI.VTableIndex + 1 - AddressPoint;
+        if (Context.getCXXABIKind() == TargetCXXABI::GCC2) {
+          MethodVTableIndices[GlobalDecl(DD, Dtor_Base)]
+              = MI.VTableIndex;
+        } else {
+          MethodVTableIndices[GlobalDecl(DD, Dtor_Complete)]
+              = MI.VTableIndex - AddressPoint;
+          MethodVTableIndices[GlobalDecl(DD, Dtor_Deleting)]
+              = MI.VTableIndex + 1 - AddressPoint;
+        }
       } else {
-        MethodVTableIndices[MD] = MI.VTableIndex - AddressPoint;
+        if (Context.getCXXABIKind() == TargetCXXABI::GCC2) {
+          MethodVTableIndices[MD] = MI.VTableIndex;
+        } else {
+          MethodVTableIndices[MD] = MI.VTableIndex - AddressPoint;
+        }
       }
     }
   }

@@ -2207,15 +2207,15 @@ llvm::Value *CodeGenFunction::EmitCXXTypeidExpr(const CXXTypeidExpr *E) {
   llvm::Type *PtrTy = Int8PtrTy;
   LangAS GlobAS = CGM.GetGlobalVarAddressSpace(nullptr);
 
-  auto MaybeASCast = [=](llvm::Constant *TypeInfo) {
+  auto MaybeASCast = [&](llvm::Value *TypeInfo) {
     if (GlobAS == LangAS::Default)
       return TypeInfo;
-    return CGM.performAddrSpaceCast(TypeInfo, PtrTy);
+    return Builder.CreatePointerBitCastOrAddrSpaceCast(TypeInfo, PtrTy);
   };
 
   if (E->isTypeOperand()) {
-    llvm::Constant *TypeInfo =
-        CGM.GetAddrOfRTTIDescriptor(E->getTypeOperand(getContext()));
+    llvm::Value *TypeInfo =
+        CGM.getCXXABI().EmitStaticTypeid(*this, E->getTypeOperand(getContext()), PtrTy);
     return MaybeASCast(TypeInfo);
   }
 
@@ -2230,7 +2230,7 @@ llvm::Value *CodeGenFunction::EmitCXXTypeidExpr(const CXXTypeidExpr *E) {
                                 E->hasNullCheck());
 
   QualType OperandTy = E->getExprOperand()->getType();
-  return MaybeASCast(CGM.GetAddrOfRTTIDescriptor(OperandTy));
+  return MaybeASCast(CGM.getCXXABI().EmitStaticTypeid(*this, OperandTy, PtrTy));
 }
 
 static llvm::Value *EmitDynamicCastToNull(CodeGenFunction &CGF,

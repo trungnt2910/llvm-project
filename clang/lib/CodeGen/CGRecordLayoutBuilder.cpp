@@ -857,10 +857,17 @@ void CGRecordLowering::computeVolatileBitfields() {
 }
 
 void CGRecordLowering::accumulateVPtrs() {
-  if (Layout.hasOwnVFPtr())
+  if (Layout.hasOwnVFPtr()) {
+    CharUnits VFPtrOffset = CharUnits::Zero();
+    if (Context.getCXXABIKind() == TargetCXXABI::GCC2) {
+      CharUnits PtrWidth = Context.toCharUnitsFromBits(
+          Context.getTargetInfo().getPointerWidth(LangAS::Default));
+      VFPtrOffset = Layout.getNonVirtualSize() - PtrWidth;
+    }
     Members.push_back(
-        MemberInfo(CharUnits::Zero(), MemberInfo::VFPtr,
+        MemberInfo(VFPtrOffset, MemberInfo::VFPtr,
                    llvm::PointerType::getUnqual(Types.getLLVMContext())));
+  }
   if (Layout.hasOwnVBPtr())
     Members.push_back(
         MemberInfo(Layout.getVBPtrOffset(), MemberInfo::VBPtr,

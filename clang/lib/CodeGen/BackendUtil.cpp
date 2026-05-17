@@ -514,6 +514,7 @@ static bool initTargetOptions(const CompilerInstance &CI,
   Options.MCOptions.Crel = CodeGenOpts.Crel;
   Options.MCOptions.RelocSectionSym = CodeGenOpts.getRelocSectionSym();
   Options.MCOptions.ImplicitMapSyms = CodeGenOpts.ImplicitMapSyms;
+  Options.MCOptions.LegacyDwarf2EH = (CI.getLangOpts().CXXABI.value_or(CI.getTarget().getCXXABI().getKind()) == TargetCXXABI::GCC2) || llvm::is_contained(CodeGenOpts.CommandLineArgs, "-fc++-abi=gcc2");
   Options.MCOptions.X86RelaxRelocations = CodeGenOpts.X86RelaxRelocations;
   Options.MCOptions.CompressDebugSections =
       CodeGenOpts.getCompressDebugSections();

@@ -402,7 +402,7 @@ bool CodeGenTypes::inheritingCtorHasParams(
   // and the inherited constructor lives in a virtual base.
   return Type == Ctor_Complete ||
          !Inherited.getShadowDecl()->constructsVirtualBase() ||
-         !Target.getCXXABI().hasConstructorVariants();
+         !TargetCXXABI(Context.getCXXABIKind()).hasConstructorVariants();
 }
 
 const CGFunctionInfo &

@@ -59,6 +59,7 @@ MCOPT(bool, Crel)
 MCOPT(bool, ImplicitMapSyms)
 MCOPT(bool, X86RelaxRelocations)
 MCOPT(bool, X86Sse2Avx)
+MCOPT(bool, LegacyDwarf2EH)
 MCOPT(RelocSectionSymType, RelocSectionSym)
 MCSTROPT(ABIName)
 MCSTROPT(AsSecureLogFile)
@@ -169,6 +170,10 @@ llvm::mc::RegisterMCTargetOptionsFlags::RegisterMCTargetOptionsFlags() {
                               "instructions with VEX prefix"));
   MCBINDOPT(X86Sse2Avx);
 
+  static cl::opt<bool> LegacyDwarf2EH(
+      "legacy-dwarf2-eh", cl::desc("Use legacy Cygnus DWARF 2 exception handling"));
+  MCBINDOPT(LegacyDwarf2EH);
+
   static cl::opt<RelocSectionSymType> RelocSectionSym(
       "reloc-section-sym",
       cl::desc("Control section symbol conversion for relocations"),
@@ -213,6 +218,7 @@ MCTargetOptions llvm::mc::InitMCTargetOptionsFromFlags() {
   Options.ImplicitMapSyms = getImplicitMapSyms();
   Options.X86RelaxRelocations = getX86RelaxRelocations();
   Options.X86Sse2Avx = getX86Sse2Avx();
+  Options.LegacyDwarf2EH = getLegacyDwarf2EH();
   Options.RelocSectionSym = getRelocSectionSym();
   Options.EmitDwarfUnwind = getEmitDwarfUnwind();
   Options.EmitCompactUnwindNonCanonical = getEmitCompactUnwindNonCanonical();

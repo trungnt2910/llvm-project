@@ -70,6 +70,9 @@ llvm::FunctionCallee CodeGenModule::getTerminateFn() {
 
   // In C++, use std::terminate().
   if (getLangOpts().CPlusPlus &&
+      getContext().getCXXABIKind() == TargetCXXABI::GCC2) {
+    name = "terminate__Fv";
+  } else if (getLangOpts().CPlusPlus &&
       getTarget().getCXXABI().isItaniumFamily()) {
     name = "_ZSt9terminatev";
   } else if (getLangOpts().CPlusPlus &&
@@ -103,6 +106,8 @@ const EHPersonality
 EHPersonality::NeXT_ObjC = { "__objc_personality_v0", nullptr };
 const EHPersonality
 EHPersonality::GNU_CPlusPlus = { "__gxx_personality_v0", nullptr };
+const EHPersonality
+EHPersonality::GCC2_CPlusPlus = { "__cplus_type_matcher", nullptr };
 const EHPersonality
 EHPersonality::GNU_CPlusPlus_SJLJ = { "__gxx_personality_sj0", nullptr };
 const EHPersonality
@@ -175,13 +180,15 @@ static const EHPersonality &getObjCPersonality(const TargetInfo &Target,
   llvm_unreachable("bad runtime kind");
 }
 
-static const EHPersonality &getCXXPersonality(const TargetInfo &Target,
-                                              const CodeGenOptions &CGOpts) {
-  const llvm::Triple &T = Target.getTriple();
+static const EHPersonality &getCXXPersonality(CodeGenModule &CGM) {
+  const llvm::Triple &T = CGM.getTarget().getTriple();
+  const CodeGenOptions &CGOpts = CGM.getCodeGenOpts();
   if (T.isWindowsMSVCEnvironment())
     return EHPersonality::MSVC_CxxFrameHandler3;
   if (T.isOSAIX())
     return EHPersonality::XL_CPlusPlus;
+  if (CGM.getContext().getCXXABIKind() == TargetCXXABI::GCC2)
+    return EHPersonality::GCC2_CPlusPlus;
   if (CGOpts.hasSjLjExceptions())
     return EHPersonality::GNU_CPlusPlus_SJLJ;
   if (CGOpts.hasDWARFExceptions())
@@ -197,9 +204,10 @@ static const EHPersonality &getCXXPersonality(const TargetInfo &Target,
 
 /// Determines the personality function to use when both C++
 /// and Objective-C exceptions are being caught.
-static const EHPersonality &getObjCXXPersonality(const TargetInfo &Target,
-                                                 const CodeGenOptions &CGOpts,
+static const EHPersonality &getObjCXXPersonality(CodeGenModule &CGM,
                                                  const LangOptions &L) {
+  const TargetInfo &Target = CGM.getTarget();
+  const CodeGenOptions &CGOpts = CGM.getCodeGenOpts();
   if (Target.getTriple().isWindowsMSVCEnvironment())
     return EHPersonality::MSVC_CxxFrameHandler3;
 
@@ -207,7 +215,7 @@ static const EHPersonality &getObjCXXPersonality(const TargetInfo &Target,
   // In the fragile ABI, just use C++ exception handling and hope
   // they're not doing crazy exception mixing.
   case ObjCRuntime::FragileMacOSX:
-    return getCXXPersonality(Target, CGOpts);
+    return getCXXPersonality(CGM);
 
   // The ObjC personality defers to the C++ personality for non-ObjC
   // handlers.  Unlike the C++ case, we use the same personality
@@ -248,9 +256,9 @@ const EHPersonality &EHPersonality::get(CodeGenModule &CGM,
     return getSEHPersonalityMSVC(T);
 
   if (L.ObjC)
-    return L.CPlusPlus ? getObjCXXPersonality(Target, CGOpts, L)
+    return L.CPlusPlus ? getObjCXXPersonality(CGM, L)
                        : getObjCPersonality(Target, CGOpts, L);
-  return L.CPlusPlus ? getCXXPersonality(Target, CGOpts)
+  return L.CPlusPlus ? getCXXPersonality(CGM)
                      : getCPersonality(Target, CGOpts);
 }
 
@@ -347,7 +355,7 @@ void CodeGenModule::SimplifyPersonality() {
     return;
 
   const EHPersonality &ObjCXX = EHPersonality::get(*this, /*FD=*/nullptr);
-  const EHPersonality &CXX = getCXXPersonality(getTarget(), CodeGenOpts);
+  const EHPersonality &CXX = getCXXPersonality(*this);
   if (&ObjCXX == &CXX)
     return;
 
@@ -574,6 +582,30 @@ static void emitFilterDispatchBlock(CodeGenFunction &CGF,
   // because __cxa_call_unexpected magically filters exceptions
   // according to the last landing pad the exception was thrown
   // into.  Seriously.
+  if (CGF.CGM.getContext().getCXXABIKind() == TargetCXXABI::GCC2) {
+    unsigned NumFilters = filterScope.getNumFilters();
+    SmallVector<llvm::Constant *, 8> FilterValues;
+    for (unsigned i = 0; i != NumFilters; ++i) {
+      FilterValues.push_back(cast<llvm::Constant>(filterScope.getFilter(i)));
+    }
+    llvm::ArrayType *ATy = llvm::ArrayType::get(CGF.CGM.Int8PtrTy, NumFilters);
+    llvm::Constant *Init = llvm::ConstantArray::get(ATy, FilterValues);
+    llvm::GlobalVariable *GV = new llvm::GlobalVariable(
+        CGF.CGM.getModule(), ATy, /*isConstant=*/true,
+        llvm::GlobalValue::PrivateLinkage, Init, "eh_spec_types");
+    GV->setAlignment(llvm::Align(4));
+
+    llvm::Value *Arg0 = CGF.Builder.getInt32(NumFilters);
+    llvm::Value *Arg1 = CGF.Builder.CreateBitCast(GV, CGF.CGM.Int8PtrTy);
+
+    llvm::FunctionType *FTy = llvm::FunctionType::get(
+        CGF.CGM.VoidTy, {CGF.CGM.Int32Ty, CGF.CGM.Int8PtrTy}, /*isVarArg=*/false);
+    llvm::FunctionCallee CheckFn = CGF.CGM.CreateRuntimeFunction(FTy, "__check_eh_spec");
+    CGF.EmitRuntimeCall(CheckFn, {Arg0, Arg1})->setDoesNotReturn();
+    CGF.Builder.CreateUnreachable();
+    return;
+  }
+
   llvm::Value *exn = CGF.getExceptionFromSlot();
   CGF.EmitRuntimeCall(getUnexpectedFn(CGF.CGM), exn)
     ->setDoesNotReturn();

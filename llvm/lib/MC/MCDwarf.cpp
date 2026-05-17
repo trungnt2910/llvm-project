@@ -1908,22 +1908,35 @@ const MCSymbol &FrameEmitterImpl::EmitCIE(const MCDwarfFrameInfo &Frame) {
   Streamer.emitInt8(CIEVersion);
 
   if (IsEH) {
-    SmallString<8> Augmentation;
-    Augmentation += "z";
-    if (Frame.Personality)
-      Augmentation += "P";
-    if (Frame.Lsda)
-      Augmentation += "L";
-    Augmentation += "R";
-    if (Frame.IsSignalFrame)
-      Augmentation += "S";
-    if (Frame.IsBKeyFrame)
-      Augmentation += "B";
-    if (Frame.IsMTETaggedFrame)
-      Augmentation += "G";
-    Streamer.emitBytes(Augmentation);
+    if (context.getAsmInfo().usesLegacyDwarf2EH()) {
+      Streamer.emitBytes("eh");
+    } else {
+      SmallString<8> Augmentation;
+      Augmentation += "z";
+      if (Frame.Personality)
+        Augmentation += "P";
+      if (Frame.Lsda)
+        Augmentation += "L";
+      Augmentation += "R";
+      if (Frame.IsSignalFrame)
+        Augmentation += "S";
+      if (Frame.IsBKeyFrame)
+        Augmentation += "B";
+      if (Frame.IsMTETaggedFrame)
+        Augmentation += "G";
+      Streamer.emitBytes(Augmentation);
+    }
   }
   Streamer.emitInt8(0);
+
+  if (IsEH && context.getAsmInfo().usesLegacyDwarf2EH()) {
+    unsigned PCSize = context.getAsmInfo().getCodePointerSize();
+    if (Frame.Lsda)
+      emitFDESymbol(Streamer, *Frame.Lsda, dwarf::DW_EH_PE_absptr, true);
+    else
+      Streamer.emitIntValue(0, PCSize);
+  }
+
 
   if (CIEVersion >= 4) {
     // Address Size
@@ -1954,7 +1967,7 @@ const MCSymbol &FrameEmitterImpl::EmitCIE(const MCDwarfFrameInfo &Frame) {
 
   // Augmentation Data Length (optional)
   unsigned augmentationLength = 0;
-  if (IsEH) {
+  if (IsEH && !context.getAsmInfo().usesLegacyDwarf2EH()) {
     if (Frame.Personality) {
       // Personality Encoding
       augmentationLength += 1;
@@ -2043,7 +2056,7 @@ void FrameEmitterImpl::EmitFDE(const MCSymbol &cieStart,
 
   // PC Begin
   unsigned PCEncoding =
-      IsEH ? MOFI->getFDEEncoding() : (unsigned)dwarf::DW_EH_PE_absptr;
+      (IsEH && !context.getAsmInfo().usesLegacyDwarf2EH()) ? MOFI->getFDEEncoding() : (unsigned)dwarf::DW_EH_PE_absptr;
   unsigned PCSize = getSizeForEncoding(Streamer, PCEncoding);
   emitFDESymbol(Streamer, *frame.Begin, PCEncoding, IsEH);
 
@@ -2053,17 +2066,21 @@ void FrameEmitterImpl::EmitFDE(const MCSymbol &cieStart,
   emitAbsValue(Streamer, Range, PCSize);
 
   if (IsEH) {
-    // Augmentation Data Length
-    unsigned augmentationLength = 0;
+    if (context.getAsmInfo().usesLegacyDwarf2EH()) {
+      // Legacy DWARF2 EH stores the LSDA in the CIE's eh_ptr, not in the FDE.
+    } else {
+      // Augmentation Data Length
+      unsigned augmentationLength = 0;
 
-    if (frame.Lsda)
-      augmentationLength += getSizeForEncoding(Streamer, frame.LsdaEncoding);
+      if (frame.Lsda)
+        augmentationLength += getSizeForEncoding(Streamer, frame.LsdaEncoding);
 
-    Streamer.emitULEB128IntValue(augmentationLength);
+      Streamer.emitULEB128IntValue(augmentationLength);
 
-    // Augmentation Data
-    if (frame.Lsda)
-      emitFDESymbol(Streamer, *frame.Lsda, frame.LsdaEncoding, true);
+      // Augmentation Data
+      if (frame.Lsda)
+        emitFDESymbol(Streamer, *frame.Lsda, frame.LsdaEncoding, true);
+    }
   }
 
   // Call Frame Instructions
@@ -2084,13 +2101,14 @@ namespace {
 struct CIEKey {
   CIEKey() = default;
 
-  explicit CIEKey(const MCDwarfFrameInfo &Frame, bool IsEH)
+  explicit CIEKey(const MCDwarfFrameInfo &Frame, bool IsEH, bool UsesLegacyDwarf2EH)
       : Personality(Frame.Personality),
         PersonalityEncoding(Frame.PersonalityEncoding),
         LsdaEncoding(Frame.LsdaEncoding), IsSignalFrame(Frame.IsSignalFrame),
         IsSimple(Frame.IsSimple), RAReg(Frame.RAReg),
         IsBKeyFrame(Frame.IsBKeyFrame),
-        IsMTETaggedFrame(Frame.IsMTETaggedFrame), IsEH(IsEH) {}
+        IsMTETaggedFrame(Frame.IsMTETaggedFrame), IsEH(IsEH),
+        Lsda(UsesLegacyDwarf2EH ? Frame.Lsda : nullptr) {}
 
   StringRef PersonalityName() const {
     if (!Personality)
@@ -2106,11 +2124,11 @@ struct CIEKey {
 
     return std::make_tuple(PersonalityName(), PersonalityEncoding, LsdaEncoding,
                            IsSignalFrame, IsSimple, RAReg, IsBKeyFrame,
-                           IsMTETaggedFrame) <
+                           IsMTETaggedFrame, Lsda) <
            std::make_tuple(Other.PersonalityName(), Other.PersonalityEncoding,
                            Other.LsdaEncoding, Other.IsSignalFrame,
                            Other.IsSimple, Other.RAReg, Other.IsBKeyFrame,
-                           Other.IsMTETaggedFrame);
+                           Other.IsMTETaggedFrame, Other.Lsda);
   }
 
   bool operator==(const CIEKey &Other) const {
@@ -2123,7 +2141,7 @@ struct CIEKey {
            LsdaEncoding == Other.LsdaEncoding &&
            IsSignalFrame == Other.IsSignalFrame && IsSimple == Other.IsSimple &&
            RAReg == Other.RAReg && IsBKeyFrame == Other.IsBKeyFrame &&
-           IsMTETaggedFrame == Other.IsMTETaggedFrame;
+           IsMTETaggedFrame == Other.IsMTETaggedFrame && Lsda == Other.Lsda;
   }
   bool operator!=(const CIEKey &Other) const { return !(*this == Other); }
 
@@ -2136,6 +2154,7 @@ struct CIEKey {
   bool IsBKeyFrame = false;
   bool IsMTETaggedFrame = false;
   bool IsEH = false;
+  const MCSymbol *Lsda = nullptr;
 };
 
 } // end anonymous namespace
@@ -2186,9 +2205,9 @@ void MCDwarfFrameEmitter::emit(MCObjectStreamer &Streamer, bool IsEH) {
   // but the Android libunwindstack rejects eh_frame sections where
   // an FDE refers to a CIE other than the closest previous CIE.
   std::vector<MCDwarfFrameInfo> FrameArrayX(FrameArray.begin(), FrameArray.end());
-  llvm::stable_sort(FrameArrayX, [IsEH](const MCDwarfFrameInfo &X,
-                                        const MCDwarfFrameInfo &Y) {
-    return CIEKey(X, IsEH) < CIEKey(Y, IsEH);
+  llvm::stable_sort(FrameArrayX, [IsEH, &AsmInfo](const MCDwarfFrameInfo &X,
+                                                  const MCDwarfFrameInfo &Y) {
+    return CIEKey(X, IsEH, AsmInfo.usesLegacyDwarf2EH()) < CIEKey(Y, IsEH, AsmInfo.usesLegacyDwarf2EH());
   });
   CIEKey LastKey;
   const MCSymbol *LastCIEStart = nullptr;
@@ -2205,7 +2224,7 @@ void MCDwarfFrameEmitter::emit(MCObjectStreamer &Streamer, bool IsEH) {
       // section, do not emit anything.
       continue;
 
-    CIEKey Key(Frame, IsEH);
+    CIEKey Key(Frame, IsEH, AsmInfo.usesLegacyDwarf2EH());
     if (!LastCIEStart || Key != LastKey) {
       LastKey = Key;
       LastCIEStart = &Emitter.EmitCIE(Frame);

@@ -110,6 +110,7 @@ public:
       return T.isOSAIX();
 
     case GenericItanium:
+    case GCC2:
       return true;
 
     case Microsoft:
@@ -146,6 +147,8 @@ public:
     llvm_unreachable("bad ABI kind");
   }
 
+  bool isGCC2() const { return getKind() == GCC2; }
+
   /// Are member functions differently aligned?
   ///
   /// Many Itanium-style C++ ABIs require member functions to be aligned, so
@@ -168,6 +171,7 @@ public:
       // TODO: ARM-style pointers to member functions put the discriminator in
       //       the this adjustment, so they don't require functions to have any
       //       special alignment and could therefore also return false.
+    case GCC2:
     case GenericItanium:
     case iOS:
     case WatchOS:
@@ -204,7 +208,7 @@ public:
   /// vtable is emitted with strong linkage by the TU containing the key
   /// function.
   bool hasKeyFunctions() const {
-    return isItaniumFamily();
+    return isItaniumFamily() || isGCC2();
   }
 
   /// Can an out-of-line inline function serve as a key function?
@@ -244,6 +248,7 @@ public:
     case WatchOS:
       return false;
 
+    case GCC2:
     case GenericAArch64:
     case GenericItanium:
     case iOS:   // old iOS compilers did not follow this rule
@@ -282,6 +287,7 @@ public:
     // To preserve binary compatibility, the generic Itanium ABI has
     // permanently locked the definition of POD to the rules of C++ TR1,
     // and that trickles down to derived ABIs.
+    case GCC2:
     case GenericItanium:
     case GenericAArch64:
     case GenericARM:

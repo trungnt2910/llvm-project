@@ -653,7 +653,7 @@ void CodeGenVTables::EmitThunks(GlobalDecl GD) {
     cast<CXXMethodDecl>(GD.getDecl())->getCanonicalDecl();
 
   // We don't need to generate thunks for the base destructor.
-  if (isa<CXXDestructorDecl>(MD) && GD.getDtorType() == Dtor_Base)
+  if (!TargetCXXABI(CGM.getContext().getCXXABIKind()).isGCC2() && isa<CXXDestructorDecl>(MD) && GD.getDtorType() == Dtor_Base)
     return;
 
   const VTableContextBase::ThunkInfoVectorTy *ThunkInfoVector =

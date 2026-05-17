@@ -363,6 +363,9 @@ protected:
   /// (debugging / sanitizers) when `ExceptionsType == ExceptionHandling::None`.
   bool UsesCFIWithoutEH = false;
 
+  /// True if target uses legacy Cygnus GCC 2.95 DWARF 2 exception handling frames.
+  bool UsesLegacyDwarf2EH = false;
+
   /// Windows exception handling data (.pdata) encoding.  Defaults to Invalid.
   WinEH::EncodingType WinEHEncodingType = WinEH::EncodingType::Invalid;
 
@@ -658,6 +661,9 @@ public:
   void setExceptionsType(ExceptionHandling EH) {
     ExceptionsType = EH;
   }
+
+  bool usesLegacyDwarf2EH() const { return UsesLegacyDwarf2EH; }
+  void setUsesLegacyDwarf2EH(bool V) { UsesLegacyDwarf2EH = V; }
 
   bool usesCFIWithoutEH() const {
     return ExceptionsType == ExceptionHandling::None && UsesCFIWithoutEH;

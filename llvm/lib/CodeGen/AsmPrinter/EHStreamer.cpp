@@ -377,6 +377,7 @@ void EHStreamer::computeCallSiteTable(
 ///
 /// Returns the starting symbol of an exception table.
 MCSymbol *EHStreamer::emitExceptionTable() {
+  llvm::errs() << "emitExceptionTable called for MF: " << Asm->MF->getName() << " FunctionNumber: " << Asm->getFunctionNumber() << "\n";
   const MachineFunction *MF = Asm->MF;
   const std::vector<const GlobalValue *> &TypeInfos = MF->getTypeInfos();
   const std::vector<unsigned> &FilterIds = MF->getFilterIds();
@@ -616,6 +617,112 @@ MCSymbol *EHStreamer::emitExceptionTable() {
       Asm->emitULEB128(S.Action);
     }
     Asm->OutStreamer->emitLabel(CstEndLabel);
+  } else if (Asm->MAI.usesLegacyDwarf2EH()) {
+    // Legacy Cygnus DWARF2 EH (GCC 2.95 Model A with exception_descriptor).
+    // First, emit the legacy EH thunks in the function's text section before switching to LSDASection.
+    unsigned PtrSize = Asm->MAI.getCodePointerSize();
+    DenseMap<const LandingPadInfo *, SmallVector<MCSymbol *, 4>> LPadThunks;
+
+    Asm->OutStreamer->switchSection(Asm->MF->getSection());
+
+    for (const CallSiteRange &CSRange : CallSiteRanges) {
+      for (size_t CallSiteIdx = CSRange.CallSiteBeginIdx;
+           CallSiteIdx != CSRange.CallSiteEndIdx; ++CallSiteIdx) {
+        const CallSiteEntry &S = CallSites[CallSiteIdx];
+        if (S.LPad && !S.LPad->TypeIds.empty() && LPadThunks.find(S.LPad) == LPadThunks.end()) {
+          auto &Thunks = LPadThunks[S.LPad];
+          for (int TypeID : llvm::reverse(S.LPad->TypeIds)) {
+            if (TypeID == 0) {
+              Thunks.push_back(S.LPad->LandingPadLabel);
+            } else {
+              MCSymbol *ThunkSym = Asm->createTempSymbol("legacy_eh_thunk");
+              Thunks.push_back(ThunkSym);
+              Asm->OutStreamer->emitLabel(ThunkSym);
+              if (VerboseAsm)
+                Asm->OutStreamer->AddComment("Legacy EH Thunk for TypeID " + Twine(TypeID));
+              // movl $TypeID, %edx (0xba, imm32)
+              Asm->OutStreamer->emitIntValue(0xba, 1);
+              Asm->OutStreamer->emitIntValue(TypeID, 4);
+              // jmp LandingPadLabel (0xe9, rel32)
+              Asm->OutStreamer->emitIntValue(0xe9, 1);
+              MCSymbol *Dot = Asm->OutContext.createTempSymbol();
+              Asm->OutStreamer->emitLabel(Dot);
+              Asm->OutStreamer->emitValue(
+                  MCBinaryExpr::createSub(
+                      MCSymbolRefExpr::create(S.LPad->LandingPadLabel, Asm->OutContext),
+                      MCSymbolRefExpr::create(Dot, Asm->OutContext), Asm->OutContext),
+                  4);
+            }
+          }
+        }
+      }
+    }
+    Asm->emitAlignment(Align(4));
+
+    if (LSDASection)
+      Asm->OutStreamer->switchSection(LSDASection);
+    Asm->emitAlignment(Align(4));
+
+    for (const CallSiteRange &CSRange : CallSiteRanges)
+      Asm->OutStreamer->emitLabel(CSRange.ExceptionLabel);
+
+    // Emit exception_descriptor header: NEW_EH_RUNTIME (-2), language (4), version (1)
+    Asm->OutStreamer->emitIntValue(-2, PtrSize);
+    Asm->OutStreamer->emitIntValue(4, 2);
+    Asm->OutStreamer->emitIntValue(1, 2);
+
+    for (const CallSiteRange &CSRange : CallSiteRanges) {
+      for (size_t CallSiteIdx = CSRange.CallSiteBeginIdx;
+           CallSiteIdx != CSRange.CallSiteEndIdx; ++CallSiteIdx) {
+        const CallSiteEntry &S = CallSites[CallSiteIdx];
+        MCSymbol *EHFuncBeginSym = CSRange.FragmentBeginLabel;
+        MCSymbol *EHFuncEndSym = CSRange.FragmentEndLabel;
+        MCSymbol *BeginLabel = S.BeginLabel ? S.BeginLabel : EHFuncBeginSym;
+        MCSymbol *EndLabel = S.EndLabel ? S.EndLabel : EHFuncEndSym;
+
+        if (S.LPad && !S.LPad->TypeIds.empty()) {
+          auto &Thunks = LPadThunks[S.LPad];
+          size_t ThunkIdx = 0;
+          for (int TypeID : llvm::reverse(S.LPad->TypeIds)) {
+            if (VerboseAsm)
+              Asm->OutStreamer->AddComment(">> Legacy Call Site <<");
+            Asm->OutStreamer->emitSymbolValue(BeginLabel, PtrSize);
+            Asm->OutStreamer->emitSymbolValue(EndLabel, PtrSize);
+            Asm->OutStreamer->emitSymbolValue(Thunks[ThunkIdx++], PtrSize);
+            if (TypeID == 0) {
+              Asm->OutStreamer->emitIntValue(0, PtrSize);
+            } else if (TypeID < 0) {
+              // Filter clause (exception specification). Emitted as CATCH_ALL_TYPE (-1)
+              // so the legacy unwinder jumps to the landing pad thunk, which sets %edx < 0
+              // and invokes __check_eh_spec.
+              Asm->OutStreamer->emitIntValue(-1, PtrSize);
+            } else {
+              const GlobalValue *GV = Asm->MF->getTypeInfos()[TypeID - 1];
+              if (!GV) {
+                // Catch-all (null). Emitted as CATCH_ALL_TYPE (-1).
+                Asm->OutStreamer->emitIntValue(-1, PtrSize);
+              } else {
+                Asm->OutStreamer->emitSymbolValue(Asm->getSymbol(GV), PtrSize);
+              }
+            }
+          }
+        } else {
+          if (VerboseAsm)
+            Asm->OutStreamer->AddComment(">> Legacy Call Site <<");
+          Asm->OutStreamer->emitSymbolValue(BeginLabel, PtrSize);
+          Asm->OutStreamer->emitSymbolValue(EndLabel, PtrSize);
+          if (S.LPad)
+            Asm->OutStreamer->emitSymbolValue(S.LPad->LandingPadLabel, PtrSize);
+          else
+            Asm->OutStreamer->emitIntValue(0, PtrSize);
+          Asm->OutStreamer->emitIntValue(0, PtrSize);
+        }
+      }
+    }
+    // Terminate the table with -1.
+    Asm->OutStreamer->emitIntValue(-1, PtrSize);
+    Asm->OutStreamer->emitIntValue(-1, PtrSize);
+    return GCCETSym;
   } else {
     // Itanium LSDA exception handling
 

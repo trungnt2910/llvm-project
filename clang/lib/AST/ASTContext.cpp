@@ -897,6 +897,8 @@ CXXABI *ASTContext::createCXXABI(const TargetInfo &T) {
     return CreateItaniumCXXABI(*this);
   case TargetCXXABI::Microsoft:
     return CreateMicrosoftCXXABI(*this);
+  case TargetCXXABI::GCC2:
+    return CreateGCC2CXXABI(*this);
   }
   llvm_unreachable("Invalid CXXABI type!");
 }
@@ -13450,9 +13452,9 @@ VTableContextBase *ASTContext::getVTableContext() {
 }
 
 MangleContext *ASTContext::createMangleContext(const TargetInfo *T) {
-  if (!T)
-    T = Target;
-  switch (T->getCXXABI().getKind()) {
+  bool IsAux = (T && T != Target);
+  auto ABIKind = IsAux ? T->getCXXABI().getKind() : getCXXABIKind();
+  switch (ABIKind) {
   case TargetCXXABI::AppleARM64:
   case TargetCXXABI::Fuchsia:
   case TargetCXXABI::GenericAArch64:
@@ -13466,6 +13468,8 @@ MangleContext *ASTContext::createMangleContext(const TargetInfo *T) {
     return ItaniumMangleContext::create(*this, getDiagnostics());
   case TargetCXXABI::Microsoft:
     return MicrosoftMangleContext::create(*this, getDiagnostics());
+  case TargetCXXABI::GCC2:
+    return GCC2MangleContext::create(*this, getDiagnostics());
   }
   llvm_unreachable("Unsupported ABI");
 }
@@ -13473,6 +13477,8 @@ MangleContext *ASTContext::createMangleContext(const TargetInfo *T) {
 MangleContext *ASTContext::createDeviceMangleContext(const TargetInfo &T) {
   assert(T.getCXXABI().getKind() != TargetCXXABI::Microsoft &&
          "Device mangle context does not support Microsoft mangling.");
+  assert(T.getCXXABI().getKind() != TargetCXXABI::GCC2 &&
+         "Device mangle context does not support GCC2 mangling.");
   switch (T.getCXXABI().getKind()) {
   case TargetCXXABI::AppleARM64:
   case TargetCXXABI::Fuchsia:
@@ -13495,6 +13501,9 @@ MangleContext *ASTContext::createDeviceMangleContext(const TargetInfo &T) {
   case TargetCXXABI::Microsoft:
     return MicrosoftMangleContext::create(*this, getDiagnostics(),
                                           /*IsAux=*/true);
+  case TargetCXXABI::GCC2:
+    return GCC2MangleContext::create(*this, getDiagnostics(),
+                                     /*IsAux=*/true);
   }
   llvm_unreachable("Unsupported ABI");
 }

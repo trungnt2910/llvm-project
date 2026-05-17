@@ -274,6 +274,9 @@ public:
   getAddrOfCXXCatchHandlerType(QualType Ty, QualType CatchHandlerType) = 0;
   virtual CatchTypeInfo getCatchAllTypeInfo();
 
+  virtual llvm::Value *EmitStaticTypeid(CodeGenFunction &CGF, QualType Ty,
+                                        llvm::Type *StdTypeInfoPtrTy);
+
   virtual bool shouldTypeidBeNullChecked(QualType SrcRecordTy) = 0;
   virtual void EmitBadTypeidCall(CodeGenFunction &CGF) = 0;
   virtual llvm::Value *EmitTypeid(CodeGenFunction &CGF, QualType SrcRecordTy,
@@ -681,6 +684,9 @@ CGCXXABI *CreateItaniumCXXABI(CodeGenModule &CGM);
 
 /// Creates a Microsoft-family ABI.
 CGCXXABI *CreateMicrosoftCXXABI(CodeGenModule &CGM);
+
+/// Creates a GCC2-family ABI.
+CGCXXABI *CreateGCC2CXXABI(CodeGenModule &CGM);
 
 struct CatchRetScope final : EHScopeStack::Cleanup {
   llvm::CatchPadInst *CPI;

@@ -803,14 +803,14 @@ void CodeGenFunction::EmitConstructorBody(FunctionArgList &Args) {
   const CXXConstructorDecl *Ctor = cast<CXXConstructorDecl>(CurGD.getDecl());
   CXXCtorType CtorType = CurGD.getCtorType();
 
-  assert((CGM.getTarget().getCXXABI().hasConstructorVariants() ||
+  assert((TargetCXXABI(CGM.getContext().getCXXABIKind()).hasConstructorVariants() ||
           CtorType == Ctor_Complete) &&
          "can only generate complete ctor for this ABI");
 
   // Before we go any further, try the complete->base constructor
   // delegation optimization.
   if (CtorType == Ctor_Complete && IsConstructorDelegationValid(Ctor) &&
-      CGM.getTarget().getCXXABI().hasConstructorVariants()) {
+      TargetCXXABI(CGM.getContext().getCXXABIKind()).hasConstructorVariants()) {
     EmitDelegateCXXConstructorCall(Ctor, Ctor_Base, Args, Ctor->getEndLoc());
     return;
   }
@@ -1258,7 +1258,7 @@ void CodeGenFunction::EmitCtorPrologue(const CXXConstructorDecl *CD,
   // conditionally construct the virtual bases. Emit that check here.
   llvm::BasicBlock *BaseCtorContinueBB = nullptr;
   if (ConstructVBases &&
-      !CGM.getTarget().getCXXABI().hasConstructorVariants()) {
+      !TargetCXXABI(CGM.getContext().getCXXABIKind()).hasConstructorVariants()) {
     BaseCtorContinueBB =
         CGM.getCXXABI().EmitCtorCompleteObjectHandler(*this, ClassDecl);
     assert(BaseCtorContinueBB);
@@ -2410,7 +2410,7 @@ void CodeGenFunction::EmitInheritedCXXConstructorCall(
 
   // Forward the parameters.
   if (InheritedFromVBase &&
-      CGM.getTarget().getCXXABI().hasConstructorVariants()) {
+      TargetCXXABI(CGM.getContext().getCXXABIKind()).hasConstructorVariants()) {
     // Nothing to do; this construction is not responsible for constructing
     // the base class containing the inherited constructor.
     // FIXME: Can we just pass undef's for the remaining arguments if we don't
@@ -2707,6 +2707,16 @@ void CodeGenFunction::InitializeVTablePointer(const VPtr &Vptr) {
         *this, VTableField, NonVirtualOffset, VirtualOffset, Vptr.VTableClass,
         Vptr.NearestVBase);
 
+  if (CGM.getContext().getCXXABIKind() == TargetCXXABI::GCC2) {
+    const ASTRecordLayout &Layout = getContext().getASTRecordLayout(Vptr.Base.getBase());
+    if (Layout.hasOwnVFPtr()) {
+      CharUnits PtrWidth = getContext().toCharUnitsFromBits(
+          getContext().getTargetInfo().getPointerWidth(LangAS::Default));
+      CharUnits VFPtrOffset = Layout.getNonVirtualSize() - PtrWidth;
+      VTableField = Builder.CreateConstInBoundsByteGEP(VTableField.withElementType(Int8Ty), VFPtrOffset, "vfptr");
+    }
+  }
+
   // Finally, store the address point. Use the same LLVM types as the field to
   // support optimization.
   unsigned GlobalsAS = CGM.getDataLayout().getDefaultGlobalsAddressSpace();
@@ -2812,6 +2822,22 @@ void CodeGenFunction::InitializeVTablePointers(const CXXRecordDecl *RD) {
 llvm::Value *CodeGenFunction::GetVTablePtr(Address This, llvm::Type *VTableTy,
                                            const CXXRecordDecl *RD,
                                            VTableAuthMode AuthMode) {
+  if (CGM.getContext().getCXXABIKind() == TargetCXXABI::GCC2) {
+    const ASTRecordLayout &Layout = getContext().getASTRecordLayout(RD);
+    CharUnits PtrWidth = getContext().toCharUnitsFromBits(getContext().getTargetInfo().getPointerWidth(LangAS::Default));
+    if (Layout.hasOwnVFPtr()) {
+      CharUnits VFPtrOffset = Layout.getNonVirtualSize() - PtrWidth;
+      if (!VFPtrOffset.isZero())
+        This = Builder.CreateConstInBoundsByteGEP(This.withElementType(Int8Ty), VFPtrOffset, "vfptr");
+    } else if (RD->getNumVBases() > 0) {
+      const CXXRecordDecl *VBase = RD->vbases_begin()->getType()->getAsCXXRecordDecl();
+      CharUnits VBaseOffset = Layout.getVBaseClassOffset(VBase);
+      const ASTRecordLayout &VBaseLayout = getContext().getASTRecordLayout(VBase);
+      CharUnits VFPtrOffset = VBaseOffset + VBaseLayout.getNonVirtualSize() - PtrWidth;
+      if (!VFPtrOffset.isZero())
+        This = Builder.CreateConstInBoundsByteGEP(This.withElementType(Int8Ty), VFPtrOffset, "vfptr");
+    }
+  }
   Address VTablePtrSrc = This.withElementType(VTableTy);
   llvm::Instruction *VTable = Builder.CreateLoad(VTablePtrSrc, "vtable");
   TBAAAccessInfo TBAAInfo = CGM.getTBAAVTablePtrAccessInfo(VTableTy);

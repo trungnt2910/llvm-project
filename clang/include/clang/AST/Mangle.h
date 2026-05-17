@@ -55,7 +55,7 @@ void mangleObjCMethodName(raw_ostream &OS, bool includePrefixByte,
 /// calls to the C++ name mangler.
 class MangleContext {
 public:
-  enum ManglerKind { MK_Itanium, MK_Microsoft };
+  enum ManglerKind { MK_Itanium, MK_Microsoft, MK_GCC2 };
 
 private:
   virtual void anchor();
@@ -199,6 +199,9 @@ public:
   explicit ItaniumMangleContext(ASTContext &C, DiagnosticsEngine &D,
                                 bool IsAux = false)
       : MangleContext(C, D, MK_Itanium, IsAux) {}
+  explicit ItaniumMangleContext(ASTContext &C, DiagnosticsEngine &D,
+                                ManglerKind Kind, bool IsAux = false)
+      : MangleContext(C, D, Kind, IsAux) {}
 
   virtual void mangleCXXVTT(const CXXRecordDecl *RD, raw_ostream &) = 0;
   virtual void mangleCXXCtorVTable(const CXXRecordDecl *RD, int64_t Offset,
@@ -224,7 +227,7 @@ public:
   // it.
   virtual DiscriminatorOverrideTy getDiscriminatorOverride() const = 0;
   static bool classof(const MangleContext *C) {
-    return C->getKind() == MK_Itanium;
+    return C->getKind() == MK_Itanium || C->getKind() == MK_GCC2;
   }
 
   static ItaniumMangleContext *
@@ -233,6 +236,24 @@ public:
                                       DiagnosticsEngine &Diags,
                                       DiscriminatorOverrideTy Discriminator,
                                       bool IsAux = false);
+};
+
+class GCC2MangleContext : public ItaniumMangleContext {
+public:
+  explicit GCC2MangleContext(ASTContext &C, DiagnosticsEngine &D,
+                             bool IsAux = false)
+      : ItaniumMangleContext(C, D, MK_GCC2, IsAux) {}
+
+  static bool classof(const MangleContext *C) {
+    return C->getKind() == MK_GCC2;
+  }
+
+  static GCC2MangleContext *
+  create(ASTContext &Context, DiagnosticsEngine &Diags, bool IsAux = false);
+  static GCC2MangleContext *create(ASTContext &Context,
+                                   DiagnosticsEngine &Diags,
+                                   DiscriminatorOverrideTy Discriminator,
+                                   bool IsAux = false);
 };
 
 class MicrosoftMangleContext : public MangleContext {

@@ -35,6 +35,7 @@
 #include "llvm/Pass.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/MC/MCAsmInfo.h"
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include <cstddef>
@@ -60,7 +61,7 @@ class DwarfEHPrepare {
   const LibcallLoweringInfo &Libcalls;
   DomTreeUpdater *DTU;
   const TargetTransformInfo *TTI;
-  const Triple &TargetTriple;
+  const TargetMachine *TM;
 
   /// Return the exception object from the value passed into
   /// the 'resume' instruction (typically an aggregate). Clean up any dead
@@ -80,9 +81,9 @@ class DwarfEHPrepare {
 public:
   DwarfEHPrepare(CodeGenOptLevel OptLevel_, Function &F_,
                  const LibcallLoweringInfo &Libcalls_, DomTreeUpdater *DTU_,
-                 const TargetTransformInfo *TTI_, const Triple &TargetTriple_)
+                 const TargetTransformInfo *TTI_, const TargetMachine *TM_)
       : OptLevel(OptLevel_), F(F_), Libcalls(Libcalls_), DTU(DTU_), TTI(TTI_),
-        TargetTriple(TargetTriple_) {}
+        TM(TM_) {}
 
   bool run();
 };
@@ -219,8 +220,13 @@ bool DwarfEHPrepare::InsertUnwindResumeCalls() {
   StringRef RewindName;
   bool DoesRewindFunctionNeedExceptionObject;
 
-  if ((Pers == EHPersonality::GNU_CXX || Pers == EHPersonality::GNU_CXX_SjLj) &&
-      TargetTriple.isTargetEHABICompatible()) {
+  if (TM && TM->getMCAsmInfo().usesLegacyDwarf2EH()) {
+    RewindName = "__throw";
+    FTy = FunctionType::get(Type::getVoidTy(Ctx), false);
+    RewindFunctionCallingConv = CallingConv::C;
+    DoesRewindFunctionNeedExceptionObject = false;
+  } else if ((Pers == EHPersonality::GNU_CXX || Pers == EHPersonality::GNU_CXX_SjLj) &&
+      TM && TM->getTargetTriple().isTargetEHABICompatible()) {
     RewindName = Libcalls.getLibcallName(RTLIB::CXA_END_CLEANUP);
     FTy = FunctionType::get(Type::getVoidTy(Ctx), false);
     RewindFunctionCallingConv =
@@ -321,11 +327,10 @@ bool DwarfEHPrepare::run() {
 static bool prepareDwarfEH(CodeGenOptLevel OptLevel, Function &F,
                            const LibcallLoweringInfo &Libcalls,
                            DominatorTree *DT, const TargetTransformInfo *TTI,
-                           const Triple &TargetTriple) {
+                           const TargetMachine *TM) {
   DomTreeUpdater DTU(DT, DomTreeUpdater::UpdateStrategy::Lazy);
 
-  return DwarfEHPrepare(OptLevel, F, Libcalls, DT ? &DTU : nullptr, TTI,
-                        TargetTriple)
+  return DwarfEHPrepare(OptLevel, F, Libcalls, DT ? &DTU : nullptr, TTI, TM)
       .run();
 }
 
@@ -359,7 +364,7 @@ public:
         DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
       TTI = &getAnalysis<TargetTransformInfoWrapperPass>().getTTI(F);
     }
-    return prepareDwarfEH(OptLevel, F, Libcalls, DT, TTI, TM.getTargetTriple());
+    return prepareDwarfEH(OptLevel, F, Libcalls, DT, TTI, &TM);
   }
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
@@ -408,7 +413,7 @@ PreservedAnalyses DwarfEHPreparePass::run(Function &F,
       LibcallLowering->getLibcallLowering(*Subtarget);
 
   bool Changed =
-      prepareDwarfEH(OptLevel, F, Libcalls, DT, TTI, TM->getTargetTriple());
+      prepareDwarfEH(OptLevel, F, Libcalls, DT, TTI, TM);
 
   if (!Changed)
     return PreservedAnalyses::all();

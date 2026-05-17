@@ -56,6 +56,7 @@ class CodeGenVTables {
   /// Cache for the deleted virtual member call function.
   llvm::Constant *DeletedVirtualFn = nullptr;
 
+public:
   /// Get the address of a thunk and emit it if necessary.
   llvm::Constant *maybeEmitThunk(GlobalDecl GD,
                                  const ThunkInfo &ThunkAdjustments,
