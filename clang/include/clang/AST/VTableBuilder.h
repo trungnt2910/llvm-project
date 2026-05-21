@@ -309,9 +309,21 @@ public:
 
 class VTableContextBase {
 public:
+  enum VTableContextKind {
+    VCK_Itanium,
+    VCK_Microsoft,
+    VCK_GCC2
+  };
+
+private:
+  VTableContextKind Kind;
+
+public:
   typedef SmallVector<ThunkInfo, 1> ThunkInfoVectorTy;
 
-  bool isMicrosoft() const { return IsMicrosoftABI; }
+  bool isMicrosoft() const { return Kind == VCK_Microsoft; }
+  bool isGCC2() const { return Kind == VCK_GCC2; }
+  VTableContextKind getKind() const { return Kind; }
 
   virtual ~VTableContextBase() {}
 
@@ -325,7 +337,7 @@ protected:
   /// offset offsets, thunks etc) for the given record decl.
   virtual void computeVTableRelatedInformation(const CXXRecordDecl *RD) = 0;
 
-  VTableContextBase(bool MS) : IsMicrosoftABI(MS) {}
+  VTableContextBase(VTableContextKind K) : Kind(K) {}
 
 public:
   virtual const ThunkInfoVectorTy *getThunkInfo(GlobalDecl GD) {
@@ -342,8 +354,6 @@ public:
 
     return &I->second;
   }
-
-  bool IsMicrosoftABI;
 
   /// Determine whether this function should be assigned a vtable slot.
   static bool hasVtableSlot(const CXXMethodDecl *MD);
@@ -434,7 +444,68 @@ public:
   }
 
   static bool classof(const VTableContextBase *VT) {
-    return !VT->isMicrosoft();
+    return VT->getKind() == VCK_Itanium;
+  }
+};
+
+class GCC2VTableContext : public VTableContextBase {
+public:
+  typedef llvm::DenseMap<const CXXMethodDecl *, const CXXMethodDecl *>
+      OriginalMethodMapTy;
+
+private:
+  typedef llvm::DenseMap<GlobalDecl, int64_t> MethodVTableIndicesTy;
+  MethodVTableIndicesTy MethodVTableIndices;
+
+  typedef llvm::DenseMap<const CXXRecordDecl *,
+                         std::unique_ptr<const VTableLayout>>
+      VTableLayoutMapTy;
+  VTableLayoutMapTy VTableLayouts;
+
+  typedef std::pair<const CXXRecordDecl *,
+                    const CXXRecordDecl *> ClassPairTy;
+
+  typedef llvm::DenseMap<ClassPairTy, CharUnits>
+    VirtualBaseClassOffsetOffsetsMapTy;
+  VirtualBaseClassOffsetOffsetsMapTy VirtualBaseClassOffsetOffsets;
+
+  OriginalMethodMapTy OriginalMethodMap;
+
+  void computeVTableRelatedInformation(const CXXRecordDecl *RD) override;
+
+public:
+  GCC2VTableContext(ASTContext &Context);
+  ~GCC2VTableContext() override;
+
+  const VTableLayout &getVTableLayout(const CXXRecordDecl *RD) {
+    computeVTableRelatedInformation(RD);
+    assert(VTableLayouts.count(RD) && "No layout for this record decl!");
+    return *VTableLayouts[RD];
+  }
+
+  std::unique_ptr<VTableLayout> createConstructionVTableLayout(
+      const CXXRecordDecl *MostDerivedClass, CharUnits MostDerivedClassOffset,
+      bool MostDerivedClassIsVirtual, const CXXRecordDecl *LayoutClass);
+
+  uint64_t getMethodVTableIndex(GlobalDecl GD);
+
+  CharUnits getVirtualBaseOffsetOffset(const CXXRecordDecl *RD,
+                                       const CXXRecordDecl *VBase);
+
+  GlobalDecl findOriginalMethod(GlobalDecl GD);
+
+  const CXXMethodDecl *findOriginalMethodInMap(const CXXMethodDecl *MD) const;
+
+  void setOriginalMethod(const CXXMethodDecl *Key, const CXXMethodDecl *Val) {
+    OriginalMethodMap[Key] = Val;
+  }
+
+  const OriginalMethodMapTy &getOriginalMethodMap() {
+    return OriginalMethodMap;
+  }
+
+  static bool classof(const VTableContextBase *VT) {
+    return VT->getKind() == VCK_GCC2;
   }
 };
 
@@ -575,7 +646,7 @@ private:
 
 public:
   MicrosoftVTableContext(ASTContext &Context)
-      : VTableContextBase(/*MS=*/true), Context(Context) {}
+      : VTableContextBase(VCK_Microsoft), Context(Context) {}
 
   ~MicrosoftVTableContext() override;
 

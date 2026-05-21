@@ -2632,6 +2632,8 @@ void CGDebugInfo::CollectCXXBasesAux(
         BaseOffset = 0 - CGM.getItaniumVTableContext()
                              .getVirtualBaseOffsetOffset(RD, Base)
                              .getQuantity();
+      } else if (CGM.getTarget().getCXXABI().isGCC2()) {
+        BaseOffset = CGM.getContext().toBits(RL.getVBaseClassOffset(Base));
       } else {
         // In the MS ABI, store the vbtable offset, which is analogous to the
         // vbase offset offset in Itanium.

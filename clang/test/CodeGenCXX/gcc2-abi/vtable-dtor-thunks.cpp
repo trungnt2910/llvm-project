@@ -41,7 +41,7 @@ void call_f2(Base2 *b2) {
 
 // CHECK: @__vt_5Base1 = constant [4 x ptr] [ptr null, ptr @__tf5Base1, ptr @_._5Base1, ptr @f1__5Base1]
 // CHECK: @__vt_5Base2 = constant [4 x ptr] [ptr null, ptr @__tf5Base2, ptr @_._5Base2, ptr @f2__5Base2]
-// CHECK: @__vt_7Derived = constant [5 x ptr] [ptr null, ptr @__tf7Derived, ptr @_._7Derived, ptr @f1__7Derived, ptr @f2__7Derived]
+// CHECK: @__vt_7Derived = constant [4 x ptr] [ptr null, ptr @__tf7Derived, ptr @_._7Derived, ptr @f1__7Derived]
 // CHECK: @__vt_7Derived.5Base2 = constant [4 x ptr] [ptr inttoptr (i32 -4 to ptr), ptr @__tf7Derived, ptr @__thunk_4__._7Derived, ptr @__thunk_4_f2__7Derived]
 
 // CHECK-LABEL: define dso_local void @call_f2__FP5Base2(

@@ -220,8 +220,10 @@ Address CodeGenFunction::GetAddressOfDirectBaseInCompleteClass(
   // Compute the offset of the virtual base.
   CharUnits Offset;
   const ASTRecordLayout &Layout = getContext().getASTRecordLayout(Derived);
-  if (BaseIsVirtual)
+  if (BaseIsVirtual) {
     Offset = Layout.getVBaseClassOffset(Base);
+
+  }
   else
     Offset = Layout.getBaseClassOffset(Base);
 
@@ -2707,15 +2709,7 @@ void CodeGenFunction::InitializeVTablePointer(const VPtr &Vptr) {
         *this, VTableField, NonVirtualOffset, VirtualOffset, Vptr.VTableClass,
         Vptr.NearestVBase);
 
-  if (CGM.getContext().getCXXABIKind() == TargetCXXABI::GCC2) {
-    const ASTRecordLayout &Layout = getContext().getASTRecordLayout(Vptr.Base.getBase());
-    if (Layout.hasOwnVFPtr()) {
-      CharUnits PtrWidth = getContext().toCharUnitsFromBits(
-          getContext().getTargetInfo().getPointerWidth(LangAS::Default));
-      CharUnits VFPtrOffset = Layout.getNonVirtualSize() - PtrWidth;
-      VTableField = Builder.CreateConstInBoundsByteGEP(VTableField.withElementType(Int8Ty), VFPtrOffset, "vfptr");
-    }
-  }
+  VTableField = CGM.getCXXABI().adjustVTableAddress(*this, VTableField, Vptr.Base.getBase());
 
   // Finally, store the address point. Use the same LLVM types as the field to
   // support optimization.
@@ -2759,7 +2753,8 @@ void CodeGenFunction::getVTablePointers(BaseSubobject Base,
                                         VPtrsVector &Vptrs) {
   // If this base is a non-virtual primary base the address point has already
   // been set.
-  if (!BaseIsNonVirtualPrimaryBase) {
+  bool NeedVPtr = CGM.getCXXABI().needsVTablePointer(Base, VTableClass);
+  if (!BaseIsNonVirtualPrimaryBase && NeedVPtr) {
     // Initialize the vtable pointer for this base.
     VPtr Vptr = {Base, NearestVBase, OffsetFromNearestVBase, VTableClass};
     Vptrs.push_back(Vptr);
@@ -2822,22 +2817,7 @@ void CodeGenFunction::InitializeVTablePointers(const CXXRecordDecl *RD) {
 llvm::Value *CodeGenFunction::GetVTablePtr(Address This, llvm::Type *VTableTy,
                                            const CXXRecordDecl *RD,
                                            VTableAuthMode AuthMode) {
-  if (CGM.getContext().getCXXABIKind() == TargetCXXABI::GCC2) {
-    const ASTRecordLayout &Layout = getContext().getASTRecordLayout(RD);
-    CharUnits PtrWidth = getContext().toCharUnitsFromBits(getContext().getTargetInfo().getPointerWidth(LangAS::Default));
-    if (Layout.hasOwnVFPtr()) {
-      CharUnits VFPtrOffset = Layout.getNonVirtualSize() - PtrWidth;
-      if (!VFPtrOffset.isZero())
-        This = Builder.CreateConstInBoundsByteGEP(This.withElementType(Int8Ty), VFPtrOffset, "vfptr");
-    } else if (RD->getNumVBases() > 0) {
-      const CXXRecordDecl *VBase = RD->vbases_begin()->getType()->getAsCXXRecordDecl();
-      CharUnits VBaseOffset = Layout.getVBaseClassOffset(VBase);
-      const ASTRecordLayout &VBaseLayout = getContext().getASTRecordLayout(VBase);
-      CharUnits VFPtrOffset = VBaseOffset + VBaseLayout.getNonVirtualSize() - PtrWidth;
-      if (!VFPtrOffset.isZero())
-        This = Builder.CreateConstInBoundsByteGEP(This.withElementType(Int8Ty), VFPtrOffset, "vfptr");
-    }
-  }
+  This = CGM.getCXXABI().adjustVTablePointerSource(*this, This, RD);
   Address VTablePtrSrc = This.withElementType(VTableTy);
   llvm::Instruction *VTable = Builder.CreateLoad(VTablePtrSrc, "vtable");
   TBAAAccessInfo TBAAInfo = CGM.getTBAAVTablePtrAccessInfo(VTableTy);

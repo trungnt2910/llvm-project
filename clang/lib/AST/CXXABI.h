@@ -70,6 +70,9 @@ public:
                                               DeclaratorDecl *DD) = 0;
 
   virtual DeclaratorDecl *getDeclaratorForUnnamedTagDecl(const TagDecl *TD) = 0;
+
+  /// Returns true if static local variables should have internal linkage.
+  virtual bool isStaticLocalVarInternal() const { return false; }
 };
 
 /// Creates an instance of a C++ ABI class.

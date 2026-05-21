@@ -3590,6 +3590,8 @@ public:
 
   std::unique_ptr<MangleNumberingContext> createMangleNumberingContext() const;
 
+  bool isStaticLocalVarInternal() const;
+
   /// Used by ParmVarDecl to store on the side the
   /// index of the parameter when it exceeds the size of the normal bitfield.
   void setParameterIndex(const ParmVarDecl *D, unsigned index);

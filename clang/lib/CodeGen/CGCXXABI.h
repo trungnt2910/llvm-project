@@ -38,6 +38,8 @@ class CGCallee;
 class CodeGenFunction;
 class CodeGenModule;
 struct CatchTypeInfo;
+struct EHPersonality;
+class EHFilterScope;
 
 /// Implements C++ ABI-specific code generation functions.
 class CGCXXABI {
@@ -71,6 +73,12 @@ protected:
   }
   llvm::Value *&getStructorImplicitParamValue(CodeGenFunction &CGF) {
     return CGF.CXXStructorImplicitParamValue;
+  }
+  ImplicitParamDecl *&getGCC2VListDecl(CodeGenFunction &CGF) {
+    return CGF.GCC2VListDecl;
+  }
+  Address &getGCC2VListAlloca(CodeGenFunction &CGF) {
+    return CGF.GCC2VListAlloca;
   }
 
   /// Loads the incoming C++ this pointer as it was passed by the caller.
@@ -141,6 +149,9 @@ public:
   /// allowed; in other words, does the target do strict checking of signatures
   /// for all calls.
   virtual bool canCallMismatchedFunctionType() const { return true; }
+
+  /// Returns true if the ABI ignores empty records when passing them as arguments.
+  virtual bool shouldIgnoreEmptyRecords() const { return true; }
 
   /// If the C++ ABI requires the given type be returned in a particular way,
   /// this method sets RetAI and returns true.
@@ -675,6 +686,51 @@ public:
   virtual std::pair<llvm::Value *, const CXXRecordDecl *>
   LoadVTablePtr(CodeGenFunction &CGF, Address This,
                 const CXXRecordDecl *RD) = 0;
+
+  /// Adjust the VTable pointer offset. By default returns VTableField.
+  virtual Address adjustVTableAddress(CodeGenFunction &CGF, Address VTableField,
+                                      const CXXRecordDecl *RD) {
+    return VTableField;
+  }
+
+  /// Returns true if a base class needs a vtable pointer. By default returns true.
+  virtual bool needsVTablePointer(BaseSubobject Base,
+                                  const CXXRecordDecl *VTableClass) const {
+    return true;
+  }
+
+  /// Adjust the VTable pointer source address. By default returns This.
+  virtual Address adjustVTablePointerSource(CodeGenFunction &CGF, Address This,
+                                            const CXXRecordDecl *RD) {
+    return This;
+  }
+
+  /// Emit a call to global destructor registered with atexit.
+  virtual llvm::CallInst *emitAtExitDtorCall(CodeGenFunction &CGF,
+                                             llvm::FunctionCallee Dtor,
+                                             llvm::Value *Addr) {
+    return CGF.Builder.CreateCall(Dtor, Addr);
+  }
+
+  /// Get C++ terminate function name.
+  virtual StringRef getTerminateFnName() const {
+    return "_ZSt9terminatev";
+  }
+
+  /// Get EH Personality.
+  virtual const EHPersonality &getEHPersonality() const;
+
+  /// Emit exception specification filter dispatch. Returns true if handled.
+  virtual bool emitFilterDispatch(CodeGenFunction &CGF,
+                                  const EHFilterScope &FilterScope) {
+    return false;
+  }
+
+  /// Get VFPtr offset. By default returns DefaultOffset.
+  virtual CharUnits getVFPtrOffset(const CXXRecordDecl *RD,
+                                   CharUnits DefaultOffset) const {
+    return DefaultOffset;
+  }
 };
 
 // Create an instance of a C++ ABI class:

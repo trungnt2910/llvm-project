@@ -26,7 +26,15 @@ public:
   virtual void f();
 };
 void Derived::f() {}
-// CHECK: @__ti7Derived = weak_odr global [3 x ptr] [ptr @{{.*}}, ptr @__vt_14__si_type_info, ptr @__ti7MyClass], align 4
+// CHECK: @__ti7Derived = weak_odr global { ptr, ptr, ptr, i32 } { ptr @{{.*}}, ptr @__vt_14__si_type_info, ptr @__ti7MyClass, i32 0 }, align 4
+
+class VirtualDerived : public virtual MyClass {
+public:
+  virtual void f();
+};
+void VirtualDerived::f() {}
+// CHECK: @__ti14VirtualDerived.base_list = private constant [1 x { ptr, i32 }] [{ ptr, i32 } { ptr @__ti7MyClass, i32 1610612736 }]
+// CHECK: @__ti14VirtualDerived = weak_odr global { ptr, ptr, ptr, i32 } { ptr @{{.*}}, ptr @__vt_17__class_type_info, ptr @__ti14VirtualDerived.base_list, i32 1 }, align 4
 
 namespace N {
   class Nested {

@@ -129,6 +129,8 @@ public:
     return std::make_unique<GCC2NumberingContext>(
         cast<ItaniumMangleContext>(Mangler.get()));
   }
+
+  bool isStaticLocalVarInternal() const override { return true; }
 };
 }
 

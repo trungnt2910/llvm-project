@@ -61,26 +61,13 @@ static llvm::FunctionCallee getUnexpectedFn(CodeGenModule &CGM) {
 }
 
 llvm::FunctionCallee CodeGenModule::getTerminateFn() {
-  // void __terminate();
-
   llvm::FunctionType *FTy =
     llvm::FunctionType::get(VoidTy, /*isVarArg=*/false);
 
   StringRef name;
 
-  // In C++, use std::terminate().
-  if (getLangOpts().CPlusPlus &&
-      getContext().getCXXABIKind() == TargetCXXABI::GCC2) {
-    name = "terminate__Fv";
-  } else if (getLangOpts().CPlusPlus &&
-      getTarget().getCXXABI().isItaniumFamily()) {
-    name = "_ZSt9terminatev";
-  } else if (getLangOpts().CPlusPlus &&
-             getTarget().getCXXABI().isMicrosoft()) {
-    if (getLangOpts().isCompatibleWithMSVC(LangOptions::MSVC2015))
-      name = "__std_terminate";
-    else
-      name = "?terminate@@YAXXZ";
+  if (getLangOpts().CPlusPlus) {
+    name = getCXXABI().getTerminateFnName();
   } else if (getLangOpts().ObjC &&
              getLangOpts().ObjCRuntime.hasTerminate())
     name = "objc_terminate";
@@ -181,25 +168,7 @@ static const EHPersonality &getObjCPersonality(const TargetInfo &Target,
 }
 
 static const EHPersonality &getCXXPersonality(CodeGenModule &CGM) {
-  const llvm::Triple &T = CGM.getTarget().getTriple();
-  const CodeGenOptions &CGOpts = CGM.getCodeGenOpts();
-  if (T.isWindowsMSVCEnvironment())
-    return EHPersonality::MSVC_CxxFrameHandler3;
-  if (T.isOSAIX())
-    return EHPersonality::XL_CPlusPlus;
-  if (CGM.getContext().getCXXABIKind() == TargetCXXABI::GCC2)
-    return EHPersonality::GCC2_CPlusPlus;
-  if (CGOpts.hasSjLjExceptions())
-    return EHPersonality::GNU_CPlusPlus_SJLJ;
-  if (CGOpts.hasDWARFExceptions())
-    return EHPersonality::GNU_CPlusPlus;
-  if (CGOpts.hasSEHExceptions())
-    return EHPersonality::GNU_CPlusPlus_SEH;
-  if (CGOpts.hasWasmExceptions())
-    return EHPersonality::GNU_Wasm_CPlusPlus;
-  if (T.isOSzOS())
-    return EHPersonality::ZOS_CPlusPlus;
-  return EHPersonality::GNU_CPlusPlus;
+  return CGM.getCXXABI().getEHPersonality();
 }
 
 /// Determines the personality function to use when both C++
@@ -582,29 +551,8 @@ static void emitFilterDispatchBlock(CodeGenFunction &CGF,
   // because __cxa_call_unexpected magically filters exceptions
   // according to the last landing pad the exception was thrown
   // into.  Seriously.
-  if (CGF.CGM.getContext().getCXXABIKind() == TargetCXXABI::GCC2) {
-    unsigned NumFilters = filterScope.getNumFilters();
-    SmallVector<llvm::Constant *, 8> FilterValues;
-    for (unsigned i = 0; i != NumFilters; ++i) {
-      FilterValues.push_back(cast<llvm::Constant>(filterScope.getFilter(i)));
-    }
-    llvm::ArrayType *ATy = llvm::ArrayType::get(CGF.CGM.Int8PtrTy, NumFilters);
-    llvm::Constant *Init = llvm::ConstantArray::get(ATy, FilterValues);
-    llvm::GlobalVariable *GV = new llvm::GlobalVariable(
-        CGF.CGM.getModule(), ATy, /*isConstant=*/true,
-        llvm::GlobalValue::PrivateLinkage, Init, "eh_spec_types");
-    GV->setAlignment(llvm::Align(4));
-
-    llvm::Value *Arg0 = CGF.Builder.getInt32(NumFilters);
-    llvm::Value *Arg1 = CGF.Builder.CreateBitCast(GV, CGF.CGM.Int8PtrTy);
-
-    llvm::FunctionType *FTy = llvm::FunctionType::get(
-        CGF.CGM.VoidTy, {CGF.CGM.Int32Ty, CGF.CGM.Int8PtrTy}, /*isVarArg=*/false);
-    llvm::FunctionCallee CheckFn = CGF.CGM.CreateRuntimeFunction(FTy, "__check_eh_spec");
-    CGF.EmitRuntimeCall(CheckFn, {Arg0, Arg1})->setDoesNotReturn();
-    CGF.Builder.CreateUnreachable();
+  if (CGF.CGM.getCXXABI().emitFilterDispatch(CGF, filterScope))
     return;
-  }
 
   llvm::Value *exn = CGF.getExceptionFromSlot();
   CGF.EmitRuntimeCall(getUnexpectedFn(CGF.CGM), exn)

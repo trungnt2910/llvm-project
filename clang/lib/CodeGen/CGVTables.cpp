@@ -510,9 +510,10 @@ void CodeGenFunction::generateThunk(llvm::Function *Fn,
 
 static bool shouldEmitVTableThunk(CodeGenModule &CGM, const CXXMethodDecl *MD,
                                   bool IsUnprototyped, bool ForVTable) {
-  // Always emit thunks in the MS C++ ABI. We cannot rely on other TUs to
-  // provide thunks for us.
-  if (CGM.getTarget().getCXXABI().isMicrosoft())
+  // Always emit thunks in the MS and GCC 2.x C++ ABIs. We cannot rely on
+  // other TUs to provide thunks for us.
+  if (CGM.getTarget().getCXXABI().isMicrosoft() ||
+      TargetCXXABI(CGM.getContext().getCXXABIKind()).isGCC2())
     return true;
 
   // In the Itanium C++ ABI, vtable thunks are provided by TUs that provide

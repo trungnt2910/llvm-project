@@ -938,6 +938,14 @@ public:
     return VTables.getItaniumVTableContext();
   }
 
+  GCC2VTableContext &getGCC2VTableContext() {
+    return VTables.getGCC2VTableContext();
+  }
+
+  const GCC2VTableContext &getGCC2VTableContext() const {
+    return VTables.getGCC2VTableContext();
+  }
+
   MicrosoftVTableContext &getMicrosoftVTableContext() {
     return VTables.getMicrosoftVTableContext();
   }

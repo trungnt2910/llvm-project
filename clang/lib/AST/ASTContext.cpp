@@ -13175,6 +13175,8 @@ static GVALinkage basicGVALinkageForVariable(const ASTContext &Context,
     return GVA_Internal;
 
   if (VD->isStaticLocal()) {
+    if (Context.isStaticLocalVarInternal())
+      return GVA_Internal;
     const DeclContext *LexicalContext = VD->getParentFunctionOrMethod();
     while (LexicalContext && !isa<FunctionDecl>(LexicalContext))
       LexicalContext = LexicalContext->getLexicalParent();
@@ -13441,9 +13443,11 @@ bool ASTContext::isNearlyEmpty(const CXXRecordDecl *RD) const {
 
 VTableContextBase *ASTContext::getVTableContext() {
   if (!VTContext) {
-    auto ABI = Target->getCXXABI();
-    if (ABI.isMicrosoft())
+    TargetCXXABI::Kind ABIKind = getCXXABIKind();
+    if (ABIKind == TargetCXXABI::Microsoft)
       VTContext.reset(new MicrosoftVTableContext(*this));
+    else if (ABIKind == TargetCXXABI::GCC2)
+      VTContext.reset(new GCC2VTableContext(*this));
     else {
       VTContext.reset(new ItaniumVTableContext(*this));
     }
@@ -13748,6 +13752,11 @@ std::unique_ptr<MangleNumberingContext>
 ASTContext::createMangleNumberingContext() const {
   return ABI->createMangleNumberingContext();
 }
+
+bool ASTContext::isStaticLocalVarInternal() const {
+  return ABI->isStaticLocalVarInternal();
+}
+
 
 const CXXConstructorDecl *
 ASTContext::getCopyConstructorForExceptionObject(CXXRecordDecl *RD) {

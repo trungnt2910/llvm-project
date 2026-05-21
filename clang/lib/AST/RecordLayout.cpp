@@ -46,7 +46,8 @@ ASTRecordLayout::ASTRecordLayout(
     const ASTContext &Ctx, CharUnits size, CharUnits alignment,
     CharUnits preferredAlignment, CharUnits unadjustedAlignment,
     CharUnits requiredAlignment, bool hasOwnVFPtr, bool hasExtendableVFPtr,
-    CharUnits vbptroffset, CharUnits datasize, ArrayRef<uint64_t> fieldoffsets,
+    CharUnits vbptroffset, CharUnits gcc2vfptroffset, CharUnits datasize,
+    ArrayRef<uint64_t> fieldoffsets,
     CharUnits nonvirtualsize, CharUnits nonvirtualalignment,
     CharUnits preferrednvalignment, CharUnits SizeOfLargestEmptySubobject,
     const CXXRecordDecl *PrimaryBase, bool IsPrimaryBaseVirtual,
@@ -70,6 +71,7 @@ ASTRecordLayout::ASTRecordLayout(
   CXXInfo->VBaseOffsets = VBaseOffsets;
   CXXInfo->HasOwnVFPtr = hasOwnVFPtr;
   CXXInfo->VBPtrOffset = vbptroffset;
+  CXXInfo->GCC2VFPtrOffset = gcc2vfptroffset;
   CXXInfo->HasExtendableVFPtr = hasExtendableVFPtr;
   CXXInfo->BaseSharingVBPtr = BaseSharingVBPtr;
   CXXInfo->EndsWithZeroSizedObject = EndsWithZeroSizedObject;
@@ -83,8 +85,10 @@ ASTRecordLayout::ASTRecordLayout(
                  "Primary virtual base must be at offset 0!");
         }
       } else {
-        assert(getBaseClassOffset(PrimaryBase).isZero() &&
-               "Primary base must be at offset 0!");
+        if (!TargetCXXABI(Ctx.getCXXABIKind()).canPrimaryBaseBeAtNonZeroOffset()) {
+          assert(getBaseClassOffset(PrimaryBase).isZero() &&
+                 "Primary base must be at offset 0!");
+        }
       }
     }
 #endif

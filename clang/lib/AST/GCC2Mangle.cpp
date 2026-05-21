@@ -12,7 +12,9 @@
 
 #include "CXXABI.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/CXXInheritance.h"
 #include "clang/AST/DeclCXX.h"
+#include "clang/AST/RecordLayout.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/ExprCXX.h"
@@ -21,15 +23,88 @@
 #include "clang/Basic/TargetInfo.h"
 #include "llvm/Support/raw_ostream.h"
 #include <optional>
+#include "clang/AST/RecursiveASTVisitor.h"
 
 using namespace clang;
 
 namespace {
 
+class LocalTagVisitor : public RecursiveASTVisitor<LocalTagVisitor> {
+  const FunctionDecl *FD;
+  std::vector<const TagDecl *> &Tags;
+public:
+  LocalTagVisitor(const FunctionDecl *FD, std::vector<const TagDecl *> &Tags)
+      : FD(FD), Tags(Tags) {}
+
+  bool VisitTagDecl(TagDecl *TD) {
+    if (TD->getParentFunctionOrMethod() == FD) {
+      if (llvm::find(Tags, TD) == Tags.end()) {
+        Tags.push_back(TD);
+      }
+    }
+    return true;
+  }
+};
+
+static CharUnits getBaseOffset(const ASTContext &Context, const CXXRecordDecl *Derived, const CXXRecordDecl *Base) {
+  if (Derived->getCanonicalDecl() == Base->getCanonicalDecl())
+    return CharUnits::Zero();
+
+  CXXBasePaths Paths;
+  if (!Derived->isDerivedFrom(Base, Paths))
+    return CharUnits::Zero();
+
+  const CXXBasePath &Path = Paths.front();
+  CharUnits Offset = CharUnits::Zero();
+  const CXXRecordDecl *MostDerived = Derived;
+  for (unsigned I = 0, N = Path.size(); I != N; ++I) {
+    const CXXBasePathElement &Element = Path[I];
+    const CXXRecordDecl *Parent = Element.Class;
+    const CXXRecordDecl *Child = Element.Base->getType()->getAsCXXRecordDecl();
+    
+    if (Element.Base->isVirtual()) {
+      const ASTRecordLayout &MostDerivedLayout = Context.getASTRecordLayout(MostDerived);
+      Offset = MostDerivedLayout.getVBaseClassOffset(Child);
+    } else {
+      const ASTRecordLayout &ParentLayout = Context.getASTRecordLayout(Parent);
+      Offset += ParentLayout.getBaseClassOffset(Child);
+    }
+  }
+  return Offset;
+}
+
 class GCC2MangleContextImpl : public GCC2MangleContext {
   std::unique_ptr<ItaniumMangleContext> Fallback;
   llvm::DenseMap<const NamedDecl *, unsigned> Uniquifier;
   unsigned TempCounter = 0;
+
+  llvm::DenseMap<const FunctionDecl *, std::vector<const TagDecl *>> FunctionLocalTagsCache;
+
+  unsigned getLocalTagUniquifier(const TagDecl *TD) {
+    const DeclContext *DC = TD->getParentFunctionOrMethod();
+    if (!DC)
+      return 0;
+    const auto *FD = dyn_cast<FunctionDecl>(DC);
+    if (!FD)
+      return 0;
+
+    auto It = FunctionLocalTagsCache.find(FD);
+    if (It == FunctionLocalTagsCache.end()) {
+      std::vector<const TagDecl *> Tags;
+      if (Stmt *Body = FD->getBody()) {
+        LocalTagVisitor Visitor(FD, Tags);
+        Visitor.TraverseStmt(Body);
+      }
+      It = FunctionLocalTagsCache.insert({FD, std::move(Tags)}).first;
+    }
+
+    const std::vector<const TagDecl *> &Tags = It->second;
+    auto TagIt = llvm::find(Tags, TD);
+    if (TagIt != Tags.end()) {
+      return std::distance(Tags.begin(), TagIt);
+    }
+    return 0;
+  }
 
 public:
   explicit GCC2MangleContextImpl(ASTContext &Context, DiagnosticsEngine &Diags,
@@ -136,9 +211,157 @@ public:
   }
 
 private:
-  void mangleType(QualType T, raw_ostream &Out);
+  bool isBackReferenceableType(QualType T);
+  void mangleParameterList(ArrayRef<const ParmVarDecl *> Parameters, raw_ostream &Out);
+  void mangleType(QualType T, raw_ostream &Out, bool IsTopLevelParm = false);
   void manglePrefix(const DeclContext *DC, raw_ostream &Out);
+  void mangleTemplateParameterList(const TemplateParameterList *Params, raw_ostream &Out);
+  void mangleTemplateArgs(const TemplateParameterList *Params,
+                          const TemplateArgumentList &TemplateArgs,
+                          raw_ostream &Out);
 };
+
+void GCC2MangleContextImpl::mangleTemplateParameterList(const TemplateParameterList *Params, raw_ostream &Out) {
+  Out << Params->size();
+  for (const NamedDecl *Param : *Params) {
+    if (isa<TemplateTypeParmDecl>(Param)) {
+      Out << "Z";
+    } else if (const auto *NTTP = dyn_cast<NonTypeTemplateParmDecl>(Param)) {
+      mangleType(NTTP->getType(), Out);
+    } else if (const auto *TTP = dyn_cast<TemplateTemplateParmDecl>(Param)) {
+      Out << "z";
+      mangleTemplateParameterList(TTP->getTemplateParameters(), Out);
+    }
+  }
+}
+
+void GCC2MangleContextImpl::mangleTemplateArgs(const TemplateParameterList *Params,
+                                               const TemplateArgumentList &TemplateArgs,
+                                               raw_ostream &Out) {
+  Out << TemplateArgs.size();
+  for (unsigned ArgI = 0; ArgI < TemplateArgs.size(); ++ArgI) {
+    const TemplateArgument &Arg = TemplateArgs[ArgI];
+    if (Arg.getKind() == TemplateArgument::Type) {
+      Out << "Z";
+      mangleType(Arg.getAsType(), Out);
+    } else if (Arg.getKind() == TemplateArgument::Integral) {
+      mangleType(Arg.getIntegralType(), Out);
+      llvm::APSInt Val = Arg.getAsIntegral();
+      if (Val.isNegative()) {
+        Out << "m";
+        Val = -Val;
+      }
+      Out << Val;
+    } else if (Arg.getKind() == TemplateArgument::StructuralValue) {
+      QualType T = Arg.getStructuralValueType();
+      if (T->isRealFloatingType()) {
+        mangleType(T, Out);
+        const APValue &Val = Arg.getAsStructuralValue();
+        assert(Val.isFloat() && "expected float value for real floating type");
+        llvm::APFloat FloatVal = Val.getFloat();
+        if (FloatVal.isNaN()) {
+          Out << "NaN";
+        } else if (FloatVal.isInfinity()) {
+          if (FloatVal.isNegative()) {
+            Out << "m";
+          }
+          Out << "Infinity";
+        } else {
+          double DVal = FloatVal.convertToDouble();
+          char Buffer[128];
+          if (FloatVal.isNegative()) {
+            Out << "m";
+            DVal = -DVal;
+          }
+          snprintf(Buffer, sizeof(Buffer), "%.20e", DVal);
+          char *Exponent = strchr(Buffer, 'e');
+          if (!Exponent) {
+            Out << Buffer << "e0";
+          } else {
+            *Exponent = '\0';
+            Out << Buffer << "e";
+            char *ExpPtr = Exponent + 1;
+            if (*ExpPtr == '-') {
+              Out << "m";
+              ExpPtr++;
+            } else if (*ExpPtr == '+') {
+              ExpPtr++;
+            }
+            while (*ExpPtr == '0') {
+              ExpPtr++;
+            }
+            if (*ExpPtr == '\0') {
+              Out << "0";
+            } else {
+              Out << ExpPtr;
+            }
+          }
+        }
+      }
+    } else if (Arg.getKind() == TemplateArgument::Template) {
+      Out << "z";
+      TemplateName TName = Arg.getAsTemplate();
+      if (TemplateDecl *TD = TName.getAsTemplateDecl()) {
+        mangleTemplateParameterList(TD->getTemplateParameters(), Out);
+        StringRef TNameStr = TD->getName();
+        Out << TNameStr.size() << TNameStr;
+      }
+    } else if (Arg.getKind() == TemplateArgument::Declaration) {
+      if (Params && ArgI < Params->size()) {
+        if (const auto *NTTP = dyn_cast<NonTypeTemplateParmDecl>(Params->getParam(ArgI))) {
+          mangleType(NTTP->getType(), Out);
+        }
+      }
+      ValueDecl *D = Arg.getAsDecl();
+      if (const auto *MD = dyn_cast<CXXMethodDecl>(D)) {
+        const CXXRecordDecl *RD = MD->getParent();
+        const CXXRecordDecl *Base = RD;
+        const CXXMethodDecl *OrigMD = MD;
+        int64_t Delta = 0;
+
+        if (MD->size_overridden_methods() > 0) {
+          const CXXMethodDecl *TempMD = MD;
+          while (TempMD->size_overridden_methods() > 0) {
+            TempMD = *TempMD->overridden_methods().begin();
+          }
+          const CXXRecordDecl *TempBase = TempMD->getParent();
+          
+          Base = TempBase;
+          OrigMD = TempMD;
+          Delta = getBaseOffset(getASTContext(), RD, Base).getQuantity();
+        }
+
+        Out << Delta << "_";
+        if (MD->isVirtual()) {
+          auto *VTC = cast<GCC2VTableContext>(getASTContext().getVTableContext());
+          uint64_t VTableIndex = VTC->getMethodVTableIndex(OrigMD);
+          const ASTRecordLayout &BaseLayout = getASTContext().getASTRecordLayout(Base);
+          int64_t Delta2 = Delta + BaseLayout.getGCC2VFPtrOffset().getQuantity();
+          Out << (VTableIndex + 1) << "_i" << Delta2;
+        } else {
+          Out << "m1_";
+          std::string Mangled;
+          llvm::raw_string_ostream MangledOut(Mangled);
+          mangleCXXName(OrigMD, MangledOut);
+          Out << Mangled.size() << Mangled;
+        }
+      } else if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
+        std::string Mangled;
+        llvm::raw_string_ostream MangledOut(Mangled);
+        mangleCXXName(FD, MangledOut);
+        Out << Mangled.size() << Mangled;
+      } else if (const auto *VD = dyn_cast<VarDecl>(D)) {
+        std::string Mangled;
+        llvm::raw_string_ostream MangledOut(Mangled);
+        mangleCXXName(VD, MangledOut);
+        Out << Mangled.size() << Mangled;
+      } else if (const auto *FD = dyn_cast<FieldDecl>(D)) {
+        StringRef Name = FD->getName();
+        Out << Name.size() << Name;
+      }
+    }
+  }
+}
 
 void GCC2MangleContextImpl::manglePrefix(const DeclContext *DC, raw_ostream &Out) {
   if (DC->isTranslationUnit())
@@ -152,20 +375,144 @@ void GCC2MangleContextImpl::manglePrefix(const DeclContext *DC, raw_ostream &Out
     if (isa<LinkageSpecDecl>(C))
       continue;
     Contexts.push_back(C);
+    if (isa<FunctionDecl>(C)) {
+      // Truncate parent contexts since function's assembler name includes all of them.
+      break;
+    }
   }
 
   if (Contexts.size() > 1)
     Out << "Q" << Contexts.size();
 
+  bool LastWasDigit = false;
   for (auto I = Contexts.rbegin(), E = Contexts.rend(); I != E; ++I) {
+    if (const auto *Spec = dyn_cast<ClassTemplateSpecializationDecl>(*I)) {
+      Out << "t";
+      StringRef Name = Spec->getName();
+      Out << Name.size() << Name;
+      const TemplateArgumentList &TemplateArgs = Spec->getTemplateArgs();
+      const TemplateParameterList *Params = Spec->getSpecializedTemplate()->getTemplateParameters();
+      mangleTemplateArgs(Params, TemplateArgs, Out);
+      LastWasDigit = false;
+      continue;
+    }
+    if (const auto *RD = dyn_cast<CXXRecordDecl>(*I)) {
+      if (const auto *FD = dyn_cast_or_null<FunctionDecl>(RD->getDeclContext())) {
+        if (FunctionTemplateDecl *PrimaryTemplate = FD->getPrimaryTemplate()) {
+          if (FD->getTemplateSpecializationKind() != TSK_ExplicitSpecialization) {
+            // A local class inside a template function is mangled as a template class
+            // using the template arguments of its enclosing function.
+            Out << "t";
+            StringRef Name = RD->getName();
+            Out << Name.size() << Name;
+            const TemplateArgumentList *Args = FD->getTemplateSpecializationArgs();
+            const TemplateParameterList *Params = PrimaryTemplate->getTemplateParameters();
+            mangleTemplateArgs(Params, *Args, Out);
+            LastWasDigit = false;
+            continue;
+          }
+        }
+      }
+    }
+
+    if (const auto *FD = dyn_cast<FunctionDecl>(*I)) {
+      // Enclosing function context: recursively mangle and append uniquifier
+      std::string Mangled;
+      llvm::raw_string_ostream MangledOut(Mangled);
+      mangleCXXName(GlobalDecl(FD), MangledOut);
+      
+      unsigned UniquifierVal = 0;
+      if (!Contexts.empty()) {
+        if (const auto *TD = dyn_cast<TagDecl>(Contexts[0])) {
+          UniquifierVal = getLocalTagUniquifier(TD);
+        }
+      }
+      MangledOut << "." << UniquifierVal;
+      MangledOut.flush();
+      
+      if (LastWasDigit)
+        Out << "_";
+      Out << Mangled.size() << Mangled;
+      LastWasDigit = true;
+      continue;
+    }
     if (const auto *ND = dyn_cast<NamedDecl>(*I)) {
       StringRef Name = ND->getName();
+      if (LastWasDigit)
+        Out << "_";
       Out << Name.size() << Name;
+      LastWasDigit = !Name.empty() && isdigit(Name.back());
     }
   }
 }
 
-void GCC2MangleContextImpl::mangleType(QualType T, raw_ostream &Out) {
+
+bool GCC2MangleContextImpl::isBackReferenceableType(QualType T) {
+  T = T.getCanonicalType();
+  if (T->isBooleanType())
+    return true;
+  if (T->isBuiltinType())
+    return false;
+  if (isa<TemplateTypeParmType>(T.getTypePtr()))
+    return false;
+  return true;
+}
+
+void GCC2MangleContextImpl::mangleParameterList(ArrayRef<const ParmVarDecl *> Parameters,
+                                                raw_ostream &Out) {
+  SmallVector<QualType, 8> TypeVec;
+  unsigned NRepeats = 0;
+  QualType LastType;
+
+  auto flushRepeats = [&](unsigned Repeats, QualType T) -> bool {
+    if (!isBackReferenceableType(T))
+      return false;
+    if (TypeVec.empty())
+      return false;
+    auto It = llvm::find(ArrayRef<QualType>(TypeVec.begin(), TypeVec.end() - 1), T);
+    if (It == TypeVec.end() - 1)
+      return false;
+    unsigned Index = std::distance(ArrayRef<QualType>(TypeVec).begin(), It);
+    if (Repeats > 1) {
+      Out << "N" << Repeats;
+      if (Repeats > 9) Out << "_";
+    } else {
+      Out << "T";
+    }
+    Out << Index;
+    if (Index > 9) Out << "_";
+    return true;
+  };
+
+  for (const ParmVarDecl *PD : Parameters) {
+    QualType ParmType = PD->getASTContext().getSignatureParameterType(PD->getType()).getCanonicalType();
+    TypeVec.push_back(ParmType);
+
+    if (!LastType.isNull() && ParmType == LastType) {
+      if (isBackReferenceableType(ParmType)) {
+        NRepeats++;
+        continue;
+      }
+    } else if (NRepeats != 0) {
+      flushRepeats(NRepeats, LastType);
+      NRepeats = 0;
+    }
+
+    LastType = ParmType;
+
+    if (flushRepeats(0, ParmType))
+      continue;
+
+    mangleType(ParmType, Out, /*IsTopLevelParm=*/true);
+  }
+
+  if (NRepeats != 0) {
+    flushRepeats(NRepeats, LastType);
+    NRepeats = 0;
+  }
+}
+
+void GCC2MangleContextImpl::mangleType(QualType T, raw_ostream &Out, bool IsTopLevelParm) {
   T = T.getCanonicalType();
 
   QualType UnqualT = T.getLocalUnqualifiedType();
@@ -266,6 +613,8 @@ void GCC2MangleContextImpl::mangleType(QualType T, raw_ostream &Out) {
   case Type::Record:
   case Type::Enum: {
     const TagDecl *TD = cast<TagType>(Ty)->getDecl();
+    if (IsTopLevelParm && Ty->isRecordType())
+      Out << "G";
     manglePrefix(TD, Out);
     break;
   }
@@ -307,6 +656,21 @@ void GCC2MangleContextImpl::mangleType(QualType T, raw_ostream &Out) {
     mangleType(FPT->getReturnType(), Out);
     break;
   }
+  case Type::TemplateTypeParm: {
+    const auto *TTP = cast<TemplateTypeParmType>(Ty);
+    Out << "X";
+    unsigned Index = TTP->getIndex();
+    unsigned Depth = TTP->getDepth();
+    unsigned Level = Depth + 1;
+    auto printUnderscoreInt = [&](unsigned Val) {
+      if (Val > 9) Out << "_";
+      Out << Val;
+      if (Val > 9) Out << "_";
+    };
+    printUnderscoreInt(Index);
+    printUnderscoreInt(Level);
+    break;
+  }
   default:
     Fallback->mangleCanonicalTypeName(UnqualT, Out);
     break;
@@ -321,8 +685,7 @@ void GCC2MangleContextImpl::mangleCXXName(GlobalDecl GD, raw_ostream &Out) {
     manglePrefix(CD->getParent(), Out);
     if (CD->getParent()->getNumVBases() != 0)
       mangleType(CD->getASTContext().IntTy, Out);
-    for (const auto *PD : CD->parameters())
-      mangleType(PD->getASTContext().getSignatureParameterType(PD->getType()), Out);
+    mangleParameterList(CD->parameters(), Out);
     return;
   }
 
@@ -404,23 +767,53 @@ void GCC2MangleContextImpl::mangleCXXName(GlobalDecl GD, raw_ostream &Out) {
         break;
       default: Fallback->mangleCXXName(GD, Out); return;
       }
+    } else if (FD->getDeclName().getNameKind() == DeclarationName::CXXConversionFunctionName) {
+      Out << "__op";
+      mangleType(FD->getReturnType(), Out);
     } else {
       Out << FD->getName();
     }
-    if (const auto *MD = dyn_cast<CXXMethodDecl>(FD)) {
-      Out << "__";
-      if (MD->isConst()) Out << "C";
-      if (MD->isVolatile()) Out << "V";
-      manglePrefix(MD->getParent(), Out);
-      for (const auto *PD : FD->parameters())
-        mangleType(PD->getASTContext().getSignatureParameterType(PD->getType()), Out);
+    if (FunctionTemplateDecl *PrimaryTemplate = FD->getPrimaryTemplate()) {
+      const TemplateParameterList *Params = PrimaryTemplate->getTemplateParameters();
+      const TemplateArgumentList *Args = FD->getTemplateSpecializationArgs();
+      const FunctionDecl *TemplatedFD = PrimaryTemplate->getTemplatedDecl();
+      const CXXMethodDecl *TemplatedMD = dyn_cast<CXXMethodDecl>(TemplatedFD);
+      const CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(FD);
+      if (TemplatedMD) {
+        Out << "__H";
+        mangleTemplateArgs(Params, *Args, Out);
+        Out << "_";
+        if (MD->isConst()) Out << "C";
+        if (MD->isVolatile()) Out << "V";
+        manglePrefix(MD->getParent(), Out);
+        mangleParameterList(TemplatedMD->parameters(), Out);
+      } else {
+        Out << "__H";
+        mangleTemplateArgs(Params, *Args, Out);
+        Out << "_";
+        if (TemplatedFD->parameters().empty())
+          Out << "v";
+        else
+          mangleParameterList(TemplatedFD->parameters(), Out);
+      }
+      if (!isa<CXXConstructorDecl>(FD)) {
+        Out << "_";
+        mangleType(TemplatedFD->getReturnType(), Out);
+      }
     } else {
-      Out << "__F";
-      if (FD->parameters().empty())
-        Out << "v";
-      else
-        for (const auto *PD : FD->parameters())
-          mangleType(PD->getASTContext().getSignatureParameterType(PD->getType()), Out);
+      if (const auto *MD = dyn_cast<CXXMethodDecl>(FD)) {
+        Out << "__";
+        if (MD->isConst()) Out << "C";
+        if (MD->isVolatile()) Out << "V";
+        manglePrefix(MD->getParent(), Out);
+        mangleParameterList(FD->parameters(), Out);
+      } else {
+        Out << "__F";
+        if (FD->parameters().empty())
+          Out << "v";
+        else
+          mangleParameterList(FD->parameters(), Out);
+      }
     }
     return;
   }

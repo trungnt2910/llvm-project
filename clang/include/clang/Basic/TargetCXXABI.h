@@ -260,6 +260,15 @@ public:
     llvm_unreachable("bad ABI kind");
   }
 
+  /// Does this ABI allow the primary base class to be at a non-zero offset?
+  /// In Itanium, the primary base class must always be at offset 0.
+  /// However, some legacy or custom ABIs (like GCC2) lay out virtual base
+  /// pointers (vbptrs) at the beginning of the class, which can push the
+  /// primary base class to a non-zero offset.
+  bool canPrimaryBaseBeAtNonZeroOffset() const {
+    return getKind() == GCC2;
+  }
+
   /// When is record layout allowed to allocate objects in the tail
   /// padding of a base class?
   ///

@@ -64,6 +64,11 @@ public:
   RecordArgABI getRecordArgABI(const CXXRecordDecl *RD) const override;
 
   bool isSRetParameterAfterThis() const override { return true; }
+  StringRef getTerminateFnName() const override {
+    if (CGM.getLangOpts().isCompatibleWithMSVC(LangOptions::MSVC2015))
+      return "__std_terminate";
+    return "?terminate@@YAXXZ";
+  }
 
   bool isThisCompleteObject(GlobalDecl GD) const override {
     // The Microsoft ABI doesn't use separate complete-object vs.

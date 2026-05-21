@@ -29,7 +29,7 @@ Base2::Base2() {}
 Base2::Base2(const Base2 &other) {}
 Base2::~Base2() {}
 
-// CHECK-LABEL: define dso_local noundef ptr @__7DerivedRC7Derived(ptr noundef nonnull returned align 1 dereferenceable(1) %this, ptr noundef nonnull align 1 dereferenceable(1) %other)
+// CHECK-LABEL: define dso_local noundef ptr @__7DerivedRC7Derived(ptr noundef nonnull returned align 1 dereferenceable(2) %this, ptr noundef nonnull align 1 dereferenceable(2) %other)
 // CHECK: call noundef ptr @__5Base1RC5Base1(ptr noundef nonnull align 1 dereferenceable(1) %{{.*}}, ptr noundef nonnull align 1 dereferenceable(1) %{{.*}})
 // CHECK: call noundef ptr @__5Base2RC5Base2(ptr noundef nonnull align 1 dereferenceable(1) %{{.*}}, ptr noundef nonnull align 1 dereferenceable(1) %{{.*}})
 Derived::Derived(const Derived &other) : Base1(other), Base2(other) {}
@@ -39,4 +39,4 @@ void test_copy(const Derived &d) {
   Derived d2 = d;
 }
 // CHECK-LABEL: define dso_local void @test_copy__FRC7Derived(
-// CHECK: call noundef ptr @__7DerivedRC7Derived(ptr noundef nonnull align 1 dereferenceable(1) %d2, ptr noundef nonnull align 1 dereferenceable(1) %{{.*}})
+// CHECK: call noundef ptr @__7DerivedRC7Derived(ptr noundef nonnull align 1 dereferenceable(2) %d2, ptr noundef nonnull align 1 dereferenceable(2) %{{.*}})

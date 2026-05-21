@@ -646,12 +646,12 @@ MCSymbol *EHStreamer::emitExceptionTable() {
               // jmp LandingPadLabel (0xe9, rel32)
               Asm->OutStreamer->emitIntValue(0xe9, 1);
               MCSymbol *Dot = Asm->OutContext.createTempSymbol();
-              Asm->OutStreamer->emitLabel(Dot);
               Asm->OutStreamer->emitValue(
                   MCBinaryExpr::createSub(
                       MCSymbolRefExpr::create(S.LPad->LandingPadLabel, Asm->OutContext),
                       MCSymbolRefExpr::create(Dot, Asm->OutContext), Asm->OutContext),
                   4);
+              Asm->OutStreamer->emitLabel(Dot);
             }
           }
         }

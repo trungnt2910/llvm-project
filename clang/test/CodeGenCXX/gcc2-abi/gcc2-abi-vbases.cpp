@@ -38,3 +38,36 @@ VSub::~VSub() {}
 // CHECK: dtor.delete:
 // CHECK: call void @__builtin_delete(ptr %this)
 // CHECK: br label %dtor.end
+
+class PolyBase {
+public:
+  PolyBase();
+  virtual ~PolyBase();
+  virtual void poly();
+};
+
+class IntermediateVBase : virtual public PolyBase {
+public:
+  IntermediateVBase();
+  virtual ~IntermediateVBase();
+  virtual void inter();
+};
+
+class DeepVSub : virtual public IntermediateVBase {
+public:
+  DeepVSub();
+  virtual ~DeepVSub();
+};
+
+// 3. Verify polymorphic virtual base constructor signature with __vlist
+DeepVSub::DeepVSub() {}
+// CHECK-LABEL: define {{.*}} @__8DeepVSubi(ptr noundef {{.*}}%this, i32 noundef %__in_chrg)
+// CHECK: invoke {{.*}} @__17IntermediateVBasei(ptr {{.*}}, i32 noundef 0)
+
+// 4. Verify polymorphic virtual base destructor wrapper signature with vlist
+DeepVSub::~DeepVSub() {}
+// CHECK-LABEL: define {{.*}} @_._8DeepVSub(ptr noundef {{.*}}%this, i32 noundef %in_chrg)
+// CHECK: call {{.*}} @__base_dtor._._8DeepVSub(ptr %this, i32 %in_chrg)
+// CHECK: dtor.vbases:
+// CHECK: call {{.*}} @_._17IntermediateVBase(ptr %{{.*}}, i32 0)
+

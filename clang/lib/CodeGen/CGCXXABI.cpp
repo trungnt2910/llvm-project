@@ -372,3 +372,23 @@ CGCXXABI::AddedStructorArgCounts CGCXXABI::addImplicitConstructorArgs(
   return AddedStructorArgCounts(AddedArgs.Prefix.size(),
                                 AddedArgs.Suffix.size());
 }
+
+const EHPersonality &CGCXXABI::getEHPersonality() const {
+  const llvm::Triple &T = CGM.getTarget().getTriple();
+  const CodeGenOptions &CGOpts = CGM.getCodeGenOpts();
+  if (T.isWindowsMSVCEnvironment())
+    return EHPersonality::MSVC_CxxFrameHandler3;
+  if (T.isOSAIX())
+    return EHPersonality::XL_CPlusPlus;
+  if (CGOpts.hasSjLjExceptions())
+    return EHPersonality::GNU_CPlusPlus_SJLJ;
+  if (CGOpts.hasDWARFExceptions())
+    return EHPersonality::GNU_CPlusPlus;
+  if (CGOpts.hasSEHExceptions())
+    return EHPersonality::GNU_CPlusPlus_SEH;
+  if (CGOpts.hasWasmExceptions())
+    return EHPersonality::GNU_Wasm_CPlusPlus;
+  if (T.isOSzOS())
+    return EHPersonality::ZOS_CPlusPlus;
+  return EHPersonality::GNU_CPlusPlus;
+}

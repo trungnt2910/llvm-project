@@ -256,13 +256,7 @@ llvm::Constant *CodeGenFunction::createAtExitStub(const VarDecl &VD,
   // Emit an artificial location for this function.
   auto AL = ApplyDebugLocation::CreateArtificial(CGF);
 
-  llvm::CallInst *call;
-  if (CGF.CGM.getContext().getCXXABIKind() == TargetCXXABI::GCC2 &&
-      dtor.getFunctionType()->getNumParams() == 2) {
-    call = CGF.Builder.CreateCall(dtor, {addr, CGF.Builder.getInt32(0)});
-  } else {
-    call = CGF.Builder.CreateCall(dtor, addr);
-  }
+  llvm::CallInst *call = CGF.CGM.getCXXABI().emitAtExitDtorCall(CGF, dtor, addr);
 
   // Make sure the call and the callee agree on calling convention.
   if (auto *dtorFn = dyn_cast<llvm::Function>(

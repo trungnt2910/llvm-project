@@ -29,6 +29,13 @@ DerivedPTMF ptmf_f1 = &Derived::f1;
 // CHECK: @ptmf_f2 = global { i16, i16, ptr } { i16 4, i16 3, ptr inttoptr (i32 4 to ptr) }, align 4
 DerivedPTMF ptmf_f2 = &Derived::f2;
 
+// CHECK: @ptmf_base_to_derived = global { i16, i16, ptr } { i16 4, i16 3, ptr inttoptr (i32 4 to ptr) }, align 4
+DerivedPTMF ptmf_base_to_derived = &Base2::f2;
+
+typedef void (Base2::*Base2PTMF)();
+// CHECK: @ptmf_derived_to_base = global { i16, i16, ptr } { i16 0, i16 3, ptr null }, align 4
+Base2PTMF ptmf_derived_to_base = static_cast<Base2PTMF>((DerivedPTMF)&Base2::f2);
+
 // CHECK: @ptmd_z = global i32 9, align 4
 DerivedPTMD ptmd_z = &Derived::z;
 

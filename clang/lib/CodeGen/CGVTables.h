@@ -93,6 +93,14 @@ public:
     return *cast<ItaniumVTableContext>(VTContext);
   }
 
+  GCC2VTableContext &getGCC2VTableContext() {
+    return *cast<GCC2VTableContext>(VTContext);
+  }
+
+  const GCC2VTableContext &getGCC2VTableContext() const {
+    return *cast<GCC2VTableContext>(VTContext);
+  }
+
   MicrosoftVTableContext &getMicrosoftVTableContext() {
     return *cast<MicrosoftVTableContext>(VTContext);
   }

@@ -2127,6 +2127,8 @@ private:
   /// destructor, this will hold the implicit argument (e.g. VTT).
   ImplicitParamDecl *CXXStructorImplicitParamDecl = nullptr;
   llvm::Value *CXXStructorImplicitParamValue = nullptr;
+  ImplicitParamDecl *GCC2VListDecl = nullptr;
+  Address GCC2VListAlloca = Address::invalid();
 
   /// OutermostConditional - Points to the outermost active
   /// conditional control.  This is used so that we know if a

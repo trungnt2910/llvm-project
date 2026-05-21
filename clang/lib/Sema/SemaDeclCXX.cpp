@@ -6945,6 +6945,42 @@ static bool canPassInRegisters(Sema &S, CXXRecordDecl *D,
   if (D->isDependentType() || D->isInvalidDecl())
     return false;
 
+  if (S.Context.getCXXABIKind() == TargetCXXABI::GCC2) {
+    // Under GCC 2.95 ABI, a class can be passed in registers if it has a trivial
+    // copy constructor (or move constructor in C++11). The triviality of the
+    // destructor is ignored.
+    bool HasNonDeletedCopyOrMove = false;
+
+    if (D->needsImplicitCopyConstructor() &&
+        !D->defaultedCopyConstructorIsDeleted()) {
+      if (!D->hasTrivialCopyConstructorForCall())
+        return false;
+      HasNonDeletedCopyOrMove = true;
+    }
+
+    if (S.getLangOpts().CPlusPlus11 && D->needsImplicitMoveConstructor() &&
+        !D->defaultedMoveConstructorIsDeleted()) {
+      if (!D->hasTrivialMoveConstructorForCall())
+        return false;
+      HasNonDeletedCopyOrMove = true;
+    }
+
+    for (const CXXMethodDecl *MD : D->methods()) {
+      if (MD->isDeleted() || MD->isIneligibleOrNotSelected())
+        continue;
+
+      auto *CD = dyn_cast<CXXConstructorDecl>(MD);
+      if (CD && CD->isCopyOrMoveConstructor()) {
+        HasNonDeletedCopyOrMove = true;
+        if (!CD->isTrivialForCall())
+          return false;
+      }
+    }
+
+    return HasNonDeletedCopyOrMove;
+  }
+
+
   // Clang <= 4 used the pre-C++11 rule, which ignores move operations.
   // The PS4 platform ABI follows the behavior of Clang 3.2.
   if (CCK == TargetInfo::CCK_ClangABI4OrPS4)

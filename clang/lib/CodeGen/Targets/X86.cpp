@@ -807,7 +807,7 @@ ABIArgInfo X86_32ABIInfo::classifyArgumentType(QualType Ty, CCState &State,
       return getIndirectResult(Ty, true, State);
 
     // Ignore empty structs/unions on non-Windows.
-    if (!IsWin32StructABI && isEmptyRecord(getContext(), Ty, true))
+    if (!IsWin32StructABI && getCXXABI().shouldIgnoreEmptyRecords() && isEmptyRecord(getContext(), Ty, true))
       return ABIArgInfo::getIgnore();
 
     // Ignore 0 sized structs.

@@ -50,7 +50,7 @@ class Derived : public Base1, public Base2 { public: virtual void f2(); };
 void Base1::f1() {}
 void Base2::f2() {}
 void Derived::f2() {}
-// CHECK: define {{.*}} @__thunk_4_f2__7Derived(
+
 
 class OpTest {
 public:
@@ -175,3 +175,69 @@ void test_vu_ptr(volatile unsigned int * p) {}
 
 void test_restrict_ptr(int * __restrict * p) {}
 // CHECK: define {{.*}} @test_restrict_ptr__FPuPi(
+
+struct S { int x; };
+
+void test_struct_val(S s) {}
+// CHECK: define {{.*}} @test_struct_val__FG1S(
+
+void test_ptr_repeats(int *a, int *b, int *c) {}
+// CHECK: define {{.*}} @test_ptr_repeats__FPiN20(
+
+void test_builtin_repeats(int a, int b, int c) {}
+// CHECK: define {{.*}} @test_builtin_repeats__Fiii(
+
+void test_ref_repeats(int &a, int &b, int &c) {}
+// CHECK: define {{.*}} @test_ref_repeats__FRiN20(
+
+void test_mixed(int *a, int *b, float *c, int *d) {}
+// CHECK: define {{.*}} @test_mixed__FPiT0PfT0(
+
+void test_repeat_bools(bool a, bool b, bool c) {}
+// CHECK: define {{.*}} @test_repeat_bools__FbN20(
+
+void test_mixed_repeats(int a, int *b, int *c) {}
+// CHECK: define {{.*}} @test_mixed_repeats__FiPiT1(
+
+template <typename T, int N> class TemplateCheck { T val[N]; };
+
+void test_template_ptr(TemplateCheck<int, 42> *p) {}
+// CHECK: define {{.*}} @test_template_ptr__FPt13TemplateCheck2Zii42(
+
+void test_template_val(TemplateCheck<float, 10> v) {}
+// CHECK: define {{.*}} @test_template_val__FGt13TemplateCheck2Zfi10(
+
+template <typename T> struct LitInner1 {};
+template <typename T, typename U> struct LitInner2 {};
+template <int N> struct LitInner3 {};
+
+template <template <typename> class TT>
+struct LitOuter1 {
+  void foo() {}
+};
+template <template <typename, typename> class TT>
+struct LitOuter2 {
+  void foo() {}
+};
+template <template <int> class TT>
+struct LitOuter3 {
+  void foo() {}
+};
+
+void test_lit_template_template() {
+  LitOuter1<LitInner1> o1;
+  o1.foo();
+  // CHECK: call {{.*}} @foo__t9LitOuter11z1Z9LitInner1(
+  
+  LitOuter2<LitInner2> o2;
+  o2.foo();
+  // CHECK: call {{.*}} @foo__t9LitOuter21z2ZZ9LitInner2(
+  
+  LitOuter3<LitInner3> o3;
+  o3.foo();
+  // CHECK: call {{.*}} @foo__t9LitOuter31z1i9LitInner3(
+}
+
+// CHECK: define {{.*}} @__thunk_4_f2__7Derived(
+
+

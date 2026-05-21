@@ -699,8 +699,10 @@ protected:
         HandledFirstNonOverlappingEmptyField(false),
         FirstNearlyEmptyVBase(nullptr) {}
 
+  virtual ~ItaniumRecordLayoutBuilder() = default;
+
   void Layout(const RecordDecl *D);
-  void Layout(const CXXRecordDecl *D);
+  virtual void Layout(const CXXRecordDecl *D);
   void Layout(const ObjCInterfaceDecl *D);
 
   void LayoutFields(const RecordDecl *D);
@@ -746,7 +748,7 @@ protected:
 
   /// LayoutNonVirtualBases - Determines the primary base class (if any) and
   /// lays it out. Will then proceed to lay out all non-virtual base clasess.
-  void LayoutNonVirtualBases(const CXXRecordDecl *RD);
+  virtual void LayoutNonVirtualBases(const CXXRecordDecl *RD);
 
   /// LayoutNonVirtualBase - Lays out a single non-virtual base.
   void LayoutNonVirtualBase(const BaseSubobjectInfo *Base);
@@ -755,15 +757,15 @@ protected:
                                     CharUnits Offset);
 
   /// LayoutVirtualBases - Lays out all the virtual bases.
-  void LayoutVirtualBases(const CXXRecordDecl *RD,
-                          const CXXRecordDecl *MostDerivedClass);
+  virtual void LayoutVirtualBases(const CXXRecordDecl *RD,
+                                  const CXXRecordDecl *MostDerivedClass);
 
   /// LayoutVirtualBase - Lays out a single virtual base.
   void LayoutVirtualBase(const BaseSubobjectInfo *Base);
 
   /// LayoutBase - Will lay out a base and return the offset where it was
   /// placed, in chars.
-  CharUnits LayoutBase(const BaseSubobjectInfo *Base);
+  virtual CharUnits LayoutBase(const BaseSubobjectInfo *Base);
 
   /// InitializeLayout - Initialize record layout for the given record decl.
   void InitializeLayout(const Decl *D);
@@ -817,7 +819,194 @@ protected:
 
   ItaniumRecordLayoutBuilder(const ItaniumRecordLayoutBuilder &) = delete;
   void operator=(const ItaniumRecordLayoutBuilder &) = delete;
+
+  virtual CharUnits getGCC2VFPtrOffset() const { return CharUnits::Zero(); }
 };
+class GCC2RecordLayoutBuilder : public ItaniumRecordLayoutBuilder {
+  CharUnits GCC2BaseAlign;
+  CharUnits GCC2VFPtrOffset;
+public:
+  GCC2RecordLayoutBuilder(const ASTContext &Context,
+                          EmptySubobjectMap *EmptySubobjects)
+      : ItaniumRecordLayoutBuilder(Context, EmptySubobjects),
+        GCC2BaseAlign(CharUnits::Zero()),
+        GCC2VFPtrOffset(CharUnits::Zero()) {}
+
+  CharUnits getGCC2VFPtrOffset() const override { return GCC2VFPtrOffset; }
+
+  void DeterminePrimaryBase(const CXXRecordDecl *RD) {
+    if (!RD->isDynamicClass())
+      return;
+
+    for (const auto &I : RD->bases()) {
+      if (I.isVirtual())
+        continue;
+
+      const CXXRecordDecl *Base = I.getType()->getAsCXXRecordDecl();
+      if (Base->isDynamicClass()) {
+        PrimaryBase = Base;
+        PrimaryBaseIsVirtual = false;
+        return;
+      }
+    }
+  }
+
+  void Layout(const CXXRecordDecl *RD) override {
+    InitializeLayout(RD);
+
+    LayoutNonVirtualBases(RD);
+
+    if (RD->isDynamicClass()) {
+      CharUnits PtrWidth = Context.toCharUnitsFromBits(
+          Context.getTargetInfo().getPointerWidth(LangAS::Default));
+      CharUnits PtrAlign = Context.toCharUnitsFromBits(
+          Context.getTargetInfo().getPointerAlign(LangAS::Default));
+      for (const auto &I : llvm::reverse(RD->bases())) {
+        if (!I.isVirtual())
+          continue;
+        const CXXRecordDecl *VBaseRD = I.getType()->getAsCXXRecordDecl();
+        bool Shared = false;
+        for (const auto &J : RD->bases()) {
+          if (J.isVirtual())
+            continue;
+          const CXXRecordDecl *NVBaseRD = J.getType()->getAsCXXRecordDecl();
+          if (NVBaseRD && NVBaseRD->isDerivedFrom(VBaseRD)) {
+            Shared = true;
+            break;
+          }
+        }
+        if (!Shared) {
+          setSize(getSize().alignTo(PtrAlign) + PtrWidth);
+          setDataSize(getSize());
+          UpdateAlignment(PtrAlign);
+        }
+      }
+    }
+
+    LayoutFields(RD);
+
+    if (HasOwnVFPtr) {
+      CharUnits PtrWidth = Context.toCharUnitsFromBits(
+          Context.getTargetInfo().getPointerWidth(LangAS::Default));
+      CharUnits PtrAlign = Context.toCharUnitsFromBits(
+          Context.getTargetInfo().getPointerAlign(LangAS::Default));
+      GCC2VFPtrOffset = getSize().alignTo(PtrAlign);
+      setSize(GCC2VFPtrOffset + PtrWidth);
+      setDataSize(getSize());
+    } else if (PrimaryBase) {
+      const ASTRecordLayout &BaseLayout = Context.getASTRecordLayout(PrimaryBase);
+      GCC2VFPtrOffset = Bases[PrimaryBase] + BaseLayout.getGCC2VFPtrOffset();
+    }
+
+    NonVirtualSize = Context.toCharUnitsFromBits(
+        llvm::alignTo(getSizeInBits(), Context.getTargetInfo().getCharAlign()));
+    NonVirtualAlignment = Alignment;
+    PreferredNVAlignment = PreferredAlignment;
+
+    LayoutVirtualBases(RD, RD);
+    FinishLayout(RD);
+  }
+
+  void LayoutNonVirtualBases(const CXXRecordDecl *RD) override {
+    DeterminePrimaryBase(RD);
+    ComputeBaseSubobjectInfo(RD);
+
+    if (RD->isDynamicClass()) {
+      bool NeedsVFPtr = true;
+      bool HasDynamicBase = false;
+      for (const auto &B : RD->bases()) {
+        if (B.isVirtual()) continue;
+        const CXXRecordDecl *BaseRD = B.getType()->getAsCXXRecordDecl();
+        if (BaseRD && BaseRD->isDynamicClass()) {
+          HasDynamicBase = true;
+          break;
+        }
+      }
+      if (HasDynamicBase)
+        NeedsVFPtr = false;
+
+      bool HasNewVirtualFunctions = false;
+      bool HasBaseWithVDtor = false;
+      for (const auto &B : RD->bases()) {
+        if (const auto *BaseRD = B.getType()->getAsCXXRecordDecl())
+          if (BaseRD->hasDefinition() && BaseRD->getDestructor() && BaseRD->getDestructor()->isVirtual())
+            HasBaseWithVDtor = true;
+      }
+      for (const auto &B : RD->vbases()) {
+        if (const auto *BaseRD = B.getType()->getAsCXXRecordDecl())
+          if (BaseRD->hasDefinition() && BaseRD->getDestructor() && BaseRD->getDestructor()->isVirtual())
+            HasBaseWithVDtor = true;
+      }
+      for (const auto *MD : RD->methods()) {
+        if (MD->isVirtual() && MD->size_overridden_methods() == 0) {
+          if (isa<CXXDestructorDecl>(MD) && HasBaseWithVDtor)
+            continue;
+          HasNewVirtualFunctions = true;
+          break;
+        }
+      }
+      if (!HasNewVirtualFunctions && RD->getNumVBases() > 0)
+        NeedsVFPtr = false;
+
+      if (NeedsVFPtr) {
+        CharUnits PtrAlign = Context.toCharUnitsFromBits(
+            Context.getTargetInfo().getPointerAlign(LangAS::Default));
+        EnsureVTablePointerAlignment(PtrAlign);
+        HasOwnVFPtr = true;
+        assert(!IsUnion && "Unions cannot be dynamic classes.");
+        HandledFirstNonOverlappingEmptyField = true;
+      }
+    }
+
+    for (const auto &I : RD->bases()) {
+      if (I.isVirtual())
+        continue;
+      const CXXRecordDecl *BaseDecl = I.getType()->getAsCXXRecordDecl();
+      BaseSubobjectInfo *BaseInfo = NonVirtualBaseInfo.lookup(BaseDecl);
+      assert(BaseInfo && "Did not find base info for non-virtual base!");
+      LayoutNonVirtualBase(BaseInfo);
+    }
+  }
+
+  void LayoutVirtualBases(const CXXRecordDecl *RD,
+                          const CXXRecordDecl *MostDerivedClass) override {
+    LayoutVirtualBasesGCC2PostOrder(MostDerivedClass);
+  }
+
+  void LayoutVirtualBasesGCC2PostOrder(const CXXRecordDecl *RD) {
+    for (const auto &I : RD->bases()) {
+      const CXXRecordDecl *BaseDecl = I.getType()->getAsCXXRecordDecl();
+      LayoutVirtualBasesGCC2PostOrder(BaseDecl);
+      if (I.isVirtual()) {
+        if (VisitedVirtualBases.insert(BaseDecl).second) {
+          BaseSubobjectInfo *BaseInfo = VirtualBaseInfo.lookup(BaseDecl);
+          assert(BaseInfo && "Did not find virtual base info!");
+          LayoutVirtualBase(BaseInfo);
+        }
+      }
+    }
+  }
+
+  CharUnits LayoutBase(const BaseSubobjectInfo *Base) override {
+    const ASTRecordLayout &Layout = Context.getASTRecordLayout(Base->Class);
+    CharUnits BaseAlign = Layout.getNonVirtualAlignment();
+    GCC2BaseAlign = std::max(GCC2BaseAlign, BaseAlign);
+
+    UpdateAlignment(BaseAlign, BaseAlign, BaseAlign);
+
+    CharUnits Offset = getSize().alignTo(BaseAlign);
+
+    // Virtual bases are not subject to GCC2BaseAlign promotion.
+    CharUnits BaseSize = Base->IsVirtual
+        ? std::max(Layout.getNonVirtualSize(), CharUnits::One())
+        : std::max(Layout.getNonVirtualSize(), GCC2BaseAlign);
+    setDataSize(Offset + BaseSize);
+    setSize(std::max(getSize(), getDataSize()));
+
+    return Offset;
+  }
+};
+
 } // end anonymous namespace
 
 void ItaniumRecordLayoutBuilder::SelectPrimaryVBase(const CXXRecordDecl *RD) {
@@ -875,9 +1064,6 @@ void ItaniumRecordLayoutBuilder::DeterminePrimaryBase(const CXXRecordDecl *RD) {
       return;
     }
   }
-
-  if (Context.getCXXABIKind() == TargetCXXABI::GCC2)
-    return;
 
   // Under the Itanium ABI, if there is no non-virtual primary base class,
   // try to compute the primary virtual base.  The primary virtual base is
@@ -1053,36 +1239,19 @@ void ItaniumRecordLayoutBuilder::LayoutNonVirtualBases(
   // If this class needs a vtable/vf-table and didn't get one from a
   // primary base, add it in now.
   } else if (RD->isDynamicClass()) {
-    bool NeedsVFPtr = true;
-    if (Context.getCXXABIKind() == TargetCXXABI::GCC2) {
-      bool HasNewVirtualFunctions = false;
-      for (const auto *MD : RD->methods()) {
-        if (MD->isVirtual() && MD->size_overridden_methods() == 0) {
-          HasNewVirtualFunctions = true;
-          break;
-        }
-      }
-      if (!HasNewVirtualFunctions && RD->getNumVBases() > 0)
-        NeedsVFPtr = false;
-    }
-    if (NeedsVFPtr) {
-      assert((DataSize == 0 || Context.getCXXABIKind() == TargetCXXABI::GCC2) &&
-             "Vtable pointer must be at offset zero!");
-      CharUnits PtrWidth = Context.toCharUnitsFromBits(
-          Context.getTargetInfo().getPointerWidth(LangAS::Default));
-      CharUnits PtrAlign = Context.toCharUnitsFromBits(
-          Context.getTargetInfo().getPointerAlign(LangAS::Default));
-      EnsureVTablePointerAlignment(PtrAlign);
-      HasOwnVFPtr = true;
+    assert(DataSize == 0 && "Vtable pointer must be at offset zero!");
+    CharUnits PtrWidth = Context.toCharUnitsFromBits(
+        Context.getTargetInfo().getPointerWidth(LangAS::Default));
+    CharUnits PtrAlign = Context.toCharUnitsFromBits(
+        Context.getTargetInfo().getPointerAlign(LangAS::Default));
+    EnsureVTablePointerAlignment(PtrAlign);
+    HasOwnVFPtr = true;
 
-      assert(!IsUnion && "Unions cannot be dynamic classes.");
-      HandledFirstNonOverlappingEmptyField = true;
+    assert(!IsUnion && "Unions cannot be dynamic classes.");
+    HandledFirstNonOverlappingEmptyField = true;
 
-      if (Context.getCXXABIKind() != TargetCXXABI::GCC2) {
-        setSize(getSize() + PtrWidth);
-        setDataSize(getSize());
-      }
-    }
+    setSize(getSize() + PtrWidth);
+    setDataSize(getSize());
   }
 
   // Now lay out the non-virtual bases.
@@ -1396,28 +1565,10 @@ void ItaniumRecordLayoutBuilder::Layout(const RecordDecl *D) {
 void ItaniumRecordLayoutBuilder::Layout(const CXXRecordDecl *RD) {
   InitializeLayout(RD);
 
-  if (Context.getCXXABIKind() == TargetCXXABI::GCC2) {
-    CharUnits PtrWidth = Context.toCharUnitsFromBits(
-        Context.getTargetInfo().getPointerWidth(LangAS::Default));
-    for (const auto &I : RD->vbases()) {
-      setSize(getSize() + PtrWidth);
-      setDataSize(getSize());
-    }
-  }
-
   // Lay out the vtable and the non-virtual bases.
   LayoutNonVirtualBases(RD);
 
   LayoutFields(RD);
-
-  if (HasOwnVFPtr && Context.getCXXABIKind() == TargetCXXABI::GCC2) {
-    CharUnits PtrWidth = Context.toCharUnitsFromBits(
-        Context.getTargetInfo().getPointerWidth(LangAS::Default));
-    CharUnits PtrAlign = Context.toCharUnitsFromBits(
-        Context.getTargetInfo().getPointerAlign(LangAS::Default));
-    setSize(getSize().alignTo(PtrAlign) + PtrWidth);
-    setDataSize(getSize());
-  }
 
   NonVirtualSize = Context.toCharUnitsFromBits(
       llvm::alignTo(getSizeInBits(), Context.getTargetInfo().getCharAlign()));
@@ -3443,6 +3594,7 @@ ASTContext::getASTRecordLayout(const RecordDecl *D) const {
           *this, Builder.Size, Builder.Alignment, Builder.Alignment,
           Builder.Alignment, Builder.RequiredAlignment, Builder.HasOwnVFPtr,
           Builder.HasOwnVFPtr || Builder.PrimaryBase, Builder.VBPtrOffset,
+          CharUnits::Zero(),
           Builder.DataSize, Builder.FieldOffsets, Builder.NonVirtualSize,
           Builder.Alignment, Builder.Alignment, CharUnits::Zero(),
           Builder.PrimaryBase, false, Builder.SharedVBPtrBase,
@@ -3459,7 +3611,12 @@ ASTContext::getASTRecordLayout(const RecordDecl *D) const {
   } else {
     if (const auto *RD = dyn_cast<CXXRecordDecl>(D)) {
       EmptySubobjectMap EmptySubobjects(*this, RD);
-      ItaniumRecordLayoutBuilder Builder(*this, &EmptySubobjects);
+      ItaniumRecordLayoutBuilder *BuilderPtr;
+      if (getCXXABIKind() == TargetCXXABI::GCC2)
+        BuilderPtr = new GCC2RecordLayoutBuilder(*this, &EmptySubobjects);
+      else
+        BuilderPtr = new ItaniumRecordLayoutBuilder(*this, &EmptySubobjects);
+      ItaniumRecordLayoutBuilder &Builder = *BuilderPtr;
       Builder.Layout(RD);
 
       // In certain situations, we are allowed to lay out objects in the
@@ -3478,12 +3635,14 @@ ASTContext::getASTRecordLayout(const RecordDecl *D) const {
           Builder.PreferredAlignment, Builder.UnadjustedAlignment,
           /*RequiredAlignment : used by MS-ABI)*/
           Builder.Alignment, Builder.HasOwnVFPtr, RD->isDynamicClass(),
-          CharUnits::fromQuantity(-1), DataSize, Builder.FieldOffsets,
+          CharUnits::fromQuantity(-1), Builder.getGCC2VFPtrOffset(),
+          DataSize, Builder.FieldOffsets,
           NonVirtualSize, Builder.NonVirtualAlignment,
           Builder.PreferredNVAlignment,
           EmptySubobjects.SizeOfLargestEmptySubobject, Builder.PrimaryBase,
           Builder.PrimaryBaseIsVirtual, nullptr, false, false, Builder.Bases,
           Builder.VBases);
+      delete BuilderPtr;
     } else {
       ItaniumRecordLayoutBuilder Builder(*this, /*EmptySubobjects=*/nullptr);
       Builder.Layout(D);

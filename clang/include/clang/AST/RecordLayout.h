@@ -110,6 +110,9 @@ private:
     /// VBPtrOffset - Virtual base table offset (Microsoft-only).
     CharUnits VBPtrOffset;
 
+    /// GCC2VFPtrOffset - Virtual function table offset (GCC2-only).
+    CharUnits GCC2VFPtrOffset;
+
     /// HasOwnVFPtr - Does this class provide a virtual function table
     /// (vtable in Itanium, vftbl in Microsoft) that is independent from
     /// its base classes?
@@ -161,6 +164,7 @@ private:
                   CharUnits preferredAlignment, CharUnits unadjustedAlignment,
                   CharUnits requiredAlignment, bool hasOwnVFPtr,
                   bool hasExtendableVFPtr, CharUnits vbptroffset,
+                  CharUnits gcc2vfptroffset,
                   CharUnits datasize, ArrayRef<uint64_t> fieldoffsets,
                   CharUnits nonvirtualsize, CharUnits nonvirtualalignment,
                   CharUnits preferrednvalignment,
@@ -325,6 +329,12 @@ public:
   CharUnits getVBPtrOffset() const {
     assert(CXXInfo && "Record layout does not have C++ specific info!");
     return CXXInfo->VBPtrOffset;
+  }
+
+  /// getGCC2VFPtrOffset - Get the offset for virtual function table pointer (GCC2-only).
+  CharUnits getGCC2VFPtrOffset() const {
+    assert(CXXInfo && "Record layout does not have C++ specific info!");
+    return CXXInfo->GCC2VFPtrOffset;
   }
 
   const CXXRecordDecl *getBaseSharingVBPtr() const {

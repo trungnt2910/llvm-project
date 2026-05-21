@@ -35,8 +35,8 @@ void Base3::f3() {}
 void ComplexDerived::f2() {}
 void ComplexDerived::f4() {}
 
-// CHECK-DAG: @__vt_7Derived = constant [4 x ptr] [ptr null, ptr @__tf7Derived, ptr @f1__7Derived, ptr @f2__7Derived]
-// CHECK-DAG: @__vt_14ComplexDerived = constant [5 x ptr] [ptr null, ptr @__tf14ComplexDerived, ptr @f1__7Derived, ptr @f2__14ComplexDerived, ptr @f4__14ComplexDerived]
+// CHECK-DAG: @__vt_7Derived = constant [3 x ptr] [ptr null, ptr @__tf7Derived, ptr @f1__7Derived]
+// CHECK-DAG: @__vt_14ComplexDerived = constant [4 x ptr] [ptr null, ptr @__tf14ComplexDerived, ptr @f1__7Derived, ptr @f4__14ComplexDerived]
 
 class PolymorphicWithField {
   int field;
