@@ -28,17 +28,21 @@ struct ReproVDerived : virtual ReproVBaseNonDyn, virtual ReproVBaseDyn {
 // CHECK: %[[REG3:[a-zA-Z0-9_]+]] = getelementptr inbounds i8, ptr %this1, i32 12
 // CHECK: %[[REG4:[a-zA-Z0-9_]+]] = getelementptr inbounds i8, ptr %this1, i32 4
 // CHECK: store ptr %[[REG3]], ptr %[[REG4]], align 4
-// CHECK: vboffset.cont:
-// CHECK: %[[VFPTR:[a-zA-Z0-9_]+]] = getelementptr inbounds i8, ptr %{{.*}}, i32 0
-// CHECK: store ptr @__vt_13ReproVDerived.13ReproVBaseDyn, ptr %[[VFPTR]], align 4
+// CHECK: ctor.skip_vbases:
+// CHECK: %[[VBOFFSET:[a-zA-Z0-9_]+]] = sub i32
+// CHECK: %[[ADD_PTR:[a-zA-Z0-9_.]+]] = getelementptr inbounds i8, ptr %this1, i32 %[[VBOFFSET]]
+// CHECK: store ptr @__vt_13ReproVDerived.13ReproVBaseDyn, ptr %[[ADD_PTR]], align 4
 ReproVDerived::ReproVDerived() {}
 
 void test_vbase(ReproVDerived *d) {
   (void)typeid(*d);
 }
 // CHECK-LABEL: define dso_local void @test_vbase__FP13ReproVDerived(
-// CHECK: %[[VFPTR:.*]] = getelementptr inbounds i8, ptr %{{.*}}, i32 16
-// CHECK: %[[VTABLE:.*]] = load ptr, ptr %[[VFPTR]], align 4
+// CHECK: %[[VBPTR_GEP:.*]] = getelementptr inbounds i8, ptr %{{.*}}, i32 0
+// CHECK: %[[VBPTR:.*]] = load ptr, ptr %[[VBPTR_GEP]], align 4
+// CHECK: %[[VBOFFSET:.*]] = sub i32
+// CHECK: %[[VBASE_GEP:.*]] = getelementptr inbounds i8, ptr %{{.*}}, i32 %[[VBOFFSET]]
+// CHECK: %[[VTABLE:.*]] = load ptr, ptr %[[VBASE_GEP]], align 4
 // CHECK: %[[RTTI_FN_ADDR:.*]] = getelementptr inbounds ptr, ptr %[[VTABLE]], i64 1
 // CHECK: %[[RTTI_FN:.*]] = load ptr, ptr %[[RTTI_FN_ADDR]], align 4
 // CHECK: call ptr %[[RTTI_FN]]()

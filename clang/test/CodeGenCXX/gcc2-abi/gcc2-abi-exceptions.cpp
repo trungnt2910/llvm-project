@@ -31,5 +31,5 @@ void test_static_local() {
 
 // CHECK: [[INIT_CHECK]]:
 // CHECK: call {{.*}} @__7Derived{{.*}}
-// CHECK: call i32 @atexit(ptr @__dtor__ZZ17test_static_localvE8static_d)
+// CHECK: call i32 @atexit(ptr @__dtor_static_d)
 // CHECK: store i32 1, ptr @__tmp_0, align 4

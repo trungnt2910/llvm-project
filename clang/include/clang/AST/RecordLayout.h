@@ -110,8 +110,8 @@ private:
     /// VBPtrOffset - Virtual base table offset (Microsoft-only).
     CharUnits VBPtrOffset;
 
-    /// GCC2VFPtrOffset - Virtual function table offset (GCC2-only).
-    CharUnits GCC2VFPtrOffset;
+    /// VFPtrOffset - Virtual function table offset (GCC2-only).
+    CharUnits VFPtrOffset;
 
     /// HasOwnVFPtr - Does this class provide a virtual function table
     /// (vtable in Itanium, vftbl in Microsoft) that is independent from
@@ -331,10 +331,10 @@ public:
     return CXXInfo->VBPtrOffset;
   }
 
-  /// getGCC2VFPtrOffset - Get the offset for virtual function table pointer (GCC2-only).
-  CharUnits getGCC2VFPtrOffset() const {
+  /// getVFPtrOffset - Get the offset for virtual function table pointer (GCC2-only).
+  CharUnits getVFPtrOffset() const {
     assert(CXXInfo && "Record layout does not have C++ specific info!");
-    return CXXInfo->GCC2VFPtrOffset;
+    return CXXInfo->VFPtrOffset;
   }
 
   const CXXRecordDecl *getBaseSharingVBPtr() const {

@@ -33,6 +33,7 @@
 #include "clang/Basic/CodeGenOptions.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/Version.h"
+#include "clang/Basic/TargetCXXABI.h"
 #include "clang/CodeGen/ModuleBuilder.h"
 #include "clang/Frontend/FrontendOptions.h"
 #include "clang/Lex/HeaderSearchOptions.h"
@@ -2413,7 +2414,7 @@ CGDebugInfo::GetMethodLinkageName(const CXXMethodDecl *Method) const {
   // corresponds to multiple functions. Attach a "unified"
   // linkage name for those (which is the convention GCC uses).
   // Otherwise, attach no linkage name.
-  if (IsCtorOrDtor && !CGM.getTarget().getCXXABI().hasConstructorVariants())
+  if (IsCtorOrDtor && !TargetCXXABI(CGM.getContext().getCXXABIKind()).hasConstructorVariants())
     return {};
 
   if (const auto *Ctor = llvm::dyn_cast<CXXConstructorDecl>(Method))

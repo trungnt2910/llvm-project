@@ -60,9 +60,24 @@ void test_nested() {
 // CHECK: define internal void @bar__Q217test_nested__Fv.0_5Outer(
 // CHECK: define internal void @bar__Q317test_nested__Fv.1_5Outer5Inner(
 
+namespace NamespaceTest {
+  template <typename T>
+  void test_ns_template(T val) {
+    struct Local {
+      T v;
+      Local(T v) : v(v) {}
+      void bar() {}
+    };
+    Local l(val);
+    l.bar();
+  }
+}
+
 void instantiate() {
   test_template<int>(42);
   test_template<double>(3.14);
+  NamespaceTest::test_ns_template<int>(42);
 }
 // CHECK: define linkonce_odr void @bar__Q227test_template__H1Zi_X01_v.0t5Local1Zi(
 // CHECK: define linkonce_odr void @bar__Q227test_template__H1Zd_X01_v.0t5Local1Zd(
+// CHECK: define linkonce_odr void @bar__Q313NamespaceTest45test_ns_template__H1Zi_13NamespaceTestX01_v.0t5Local1Zi(

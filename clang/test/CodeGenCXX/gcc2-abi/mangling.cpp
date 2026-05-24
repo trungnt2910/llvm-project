@@ -238,6 +238,39 @@ void test_lit_template_template() {
   // CHECK: call {{.*}} @foo__t9LitOuter31z1i9LitInner3(
 }
 
+// --- New Backreference Indexing Branch Coverage Tests ---
+
+struct Target {
+  void test_method_backref(Target* a, Target* b);
+  static void test_static_method_backref(Target* a, Target* b);
+};
+void Target::test_method_backref(Target* a, Target* b) {}
+// CHECK: define {{.*}} @test_method_backref__6TargetP6TargetT1(
+void Target::test_static_method_backref(Target* a, Target* b) {}
+// CHECK: define {{.*}} @test_static_method_backref__6TargetP6TargetT1(
+
+
+namespace InteropNS {
+  struct Target {};
+  void test_ns_backref(Target a, Target b, Target c) {}
+  // CHECK: define {{.*}} @test_ns_backref__9InteropNSGQ29InteropNS6TargetN21(
+
+  void test_ns_ptr_ref(const Target* a, Target& b) {}
+  // CHECK: define {{.*}} @test_ns_ptr_ref__9InteropNSPCQ29InteropNS6TargetRQ29InteropNS6Target(
+}
+
+namespace std {
+  void test_std_backref(InteropNS::Target a, InteropNS::Target b) {}
+  // CHECK: define {{.*}} @test_std_backref__FGQ29InteropNS6TargetT0(
+}
+
+namespace std {
+  namespace my_foo {
+    void test_std_nested_backref(InteropNS::Target a, InteropNS::Target b) {}
+    // CHECK: define {{.*}} @test_std_nested_backref__6my_fooGQ29InteropNS6TargetT1(
+  }
+}
+
 // CHECK: define {{.*}} @__thunk_4_f2__7Derived(
 
 

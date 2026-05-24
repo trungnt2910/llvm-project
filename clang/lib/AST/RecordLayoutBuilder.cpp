@@ -673,6 +673,9 @@ protected:
   /// inheritance graph order. Used for determining the primary base class.
   const CXXRecordDecl *FirstNearlyEmptyVBase;
 
+  /// VFPtrOffset - Virtual function table pointer offset (GCC2-only).
+  CharUnits VFPtrOffset;
+
   /// VisitedVirtualBases - A set of all the visited virtual bases, used to
   /// avoid visiting virtual bases more than once.
   llvm::SmallPtrSet<const CXXRecordDecl *, 4> VisitedVirtualBases;
@@ -697,7 +700,8 @@ protected:
         PaddedFieldSize(CharUnits::Zero()), PrimaryBase(nullptr),
         PrimaryBaseIsVirtual(false), HasOwnVFPtr(false), HasPackedField(false),
         HandledFirstNonOverlappingEmptyField(false),
-        FirstNearlyEmptyVBase(nullptr) {}
+        FirstNearlyEmptyVBase(nullptr),
+        VFPtrOffset(CharUnits::fromQuantity(-1)) {}
 
   virtual ~ItaniumRecordLayoutBuilder() = default;
 
@@ -820,19 +824,15 @@ protected:
   ItaniumRecordLayoutBuilder(const ItaniumRecordLayoutBuilder &) = delete;
   void operator=(const ItaniumRecordLayoutBuilder &) = delete;
 
-  virtual CharUnits getGCC2VFPtrOffset() const { return CharUnits::Zero(); }
+  CharUnits getVFPtrOffset() const { return VFPtrOffset; }
 };
 class GCC2RecordLayoutBuilder : public ItaniumRecordLayoutBuilder {
   CharUnits GCC2BaseAlign;
-  CharUnits GCC2VFPtrOffset;
 public:
   GCC2RecordLayoutBuilder(const ASTContext &Context,
                           EmptySubobjectMap *EmptySubobjects)
       : ItaniumRecordLayoutBuilder(Context, EmptySubobjects),
-        GCC2BaseAlign(CharUnits::Zero()),
-        GCC2VFPtrOffset(CharUnits::Zero()) {}
-
-  CharUnits getGCC2VFPtrOffset() const override { return GCC2VFPtrOffset; }
+        GCC2BaseAlign(CharUnits::Zero()) {}
 
   void DeterminePrimaryBase(const CXXRecordDecl *RD) {
     if (!RD->isDynamicClass())
@@ -844,6 +844,11 @@ public:
 
       const CXXRecordDecl *Base = I.getType()->getAsCXXRecordDecl();
       if (Base->isDynamicClass()) {
+        const ASTRecordLayout &BaseLayout = Context.getASTRecordLayout(Base);
+        CharUnits VFPtrOffsetVal = BaseLayout.getVFPtrOffset();
+        if (VFPtrOffsetVal.isNegative() || VFPtrOffsetVal >= BaseLayout.getNonVirtualSize()) {
+          continue;
+        }
         PrimaryBase = Base;
         PrimaryBaseIsVirtual = false;
         return;
@@ -890,12 +895,12 @@ public:
           Context.getTargetInfo().getPointerWidth(LangAS::Default));
       CharUnits PtrAlign = Context.toCharUnitsFromBits(
           Context.getTargetInfo().getPointerAlign(LangAS::Default));
-      GCC2VFPtrOffset = getSize().alignTo(PtrAlign);
-      setSize(GCC2VFPtrOffset + PtrWidth);
+      VFPtrOffset = getSize().alignTo(PtrAlign);
+      setSize(VFPtrOffset + PtrWidth);
       setDataSize(getSize());
     } else if (PrimaryBase) {
       const ASTRecordLayout &BaseLayout = Context.getASTRecordLayout(PrimaryBase);
-      GCC2VFPtrOffset = Bases[PrimaryBase] + BaseLayout.getGCC2VFPtrOffset();
+      VFPtrOffset = Bases[PrimaryBase] + BaseLayout.getVFPtrOffset();
     }
 
     NonVirtualSize = Context.toCharUnitsFromBits(
@@ -904,6 +909,20 @@ public:
     PreferredNVAlignment = PreferredAlignment;
 
     LayoutVirtualBases(RD, RD);
+
+    if (VFPtrOffset.isNegative() && !HasOwnVFPtr && !PrimaryBase) {
+      for (const auto &I : RD->vbases()) {
+        const CXXRecordDecl *VBase = I.getType()->getAsCXXRecordDecl();
+        if (VBase->isDynamicClass()) {
+          const ASTRecordLayout &VBaseLayout = Context.getASTRecordLayout(VBase);
+          if (!VBaseLayout.getVFPtrOffset().isNegative()) {
+            VFPtrOffset = VBases[VBase].VBaseOffset + VBaseLayout.getVFPtrOffset();
+            break;
+          }
+        }
+      }
+    }
+
     FinishLayout(RD);
   }
 
@@ -922,7 +941,7 @@ public:
           break;
         }
       }
-      if (HasDynamicBase)
+      if (HasDynamicBase && PrimaryBase)
         NeedsVFPtr = false;
 
       bool HasNewVirtualFunctions = false;
@@ -978,6 +997,8 @@ public:
       const CXXRecordDecl *BaseDecl = I.getType()->getAsCXXRecordDecl();
       LayoutVirtualBasesGCC2PostOrder(BaseDecl);
       if (I.isVirtual()) {
+        if (VBases.count(BaseDecl))
+          continue;
         if (VisitedVirtualBases.insert(BaseDecl).second) {
           BaseSubobjectInfo *BaseInfo = VirtualBaseInfo.lookup(BaseDecl);
           assert(BaseInfo && "Did not find virtual base info!");
@@ -2608,34 +2629,13 @@ static bool mustSkipTailPadding(TargetCXXABI ABI, const CXXRecordDecl *RD) {
     return false;
 
   case TargetCXXABI::UseTailPaddingUnlessPOD03:
-    // FIXME: To the extent that this is meant to cover the Itanium ABI
-    // rules, we should implement the restrictions about over-sized
-    // bitfields:
-    //
-    // http://itanium-cxx-abi.github.io/cxx-abi/abi.html#POD :
-    //   In general, a type is considered a POD for the purposes of
-    //   layout if it is a POD type (in the sense of ISO C++
-    //   [basic.types]). However, a POD-struct or POD-union (in the
-    //   sense of ISO C++ [class]) with a bitfield member whose
-    //   declared width is wider than the declared type of the
-    //   bitfield is not a POD for the purpose of layout.  Similarly,
-    //   an array type is not a POD for the purpose of layout if the
-    //   element type of the array is not a POD for the purpose of
-    //   layout.
-    //
-    //   Where references to the ISO C++ are made in this paragraph,
-    //   the Technical Corrigendum 1 version of the standard is
-    //   intended.
     return RD->isPOD();
 
   case TargetCXXABI::UseTailPaddingUnlessPOD11:
-    // This is equivalent to RD->getTypeForDecl().isCXX11PODType(),
-    // but with a lot of abstraction penalty stripped off.  This does
-    // assume that these properties are set correctly even in C++98
-    // mode; fortunately, that is true because we want to assign
-    // consistently semantics to the type-traits intrinsics (or at
-    // least as many of them as possible).
     return RD->isTrivial() && RD->isCXX11StandardLayout();
+
+  case TargetCXXABI::UseTailPaddingUnlessPODOrDynamic:
+    return RD->isPOD() || RD->isDynamicClass();
   }
 
   llvm_unreachable("bad tail-padding use kind");
@@ -3375,10 +3375,31 @@ void MicrosoftRecordLayoutBuilder::layoutVirtualBases(const CXXRecordDecl *RD) {
   // Compute the vtordisp set.
   llvm::SmallPtrSet<const CXXRecordDecl *, 2> HasVtorDispSet;
   computeVtorDispSet(HasVtorDispSet, RD);
+
+  // Collect virtual bases (GCC 2.95 C++ ABI uses post-order DFS)
+  SmallVector<const CXXRecordDecl *, 8> VBasesOrder;
+  if (Context.getTargetInfo().getCXXABI().isMicrosoft()) {
+    for (const CXXBaseSpecifier &VBase : RD->vbases()) {
+      VBasesOrder.push_back(VBase.getType()->getAsCXXRecordDecl());
+    }
+  } else {
+    llvm::SmallPtrSet<const CXXRecordDecl *, 8> Visited;
+    std::function<void(const CXXRecordDecl *)> CollectPostOrder =
+        [&](const CXXRecordDecl *CurRD) {
+          for (const CXXBaseSpecifier &Base : CurRD->bases()) {
+            const CXXRecordDecl *BaseDecl = Base.getType()->getAsCXXRecordDecl();
+            CollectPostOrder(BaseDecl);
+            if (Base.isVirtual() && Visited.insert(BaseDecl).second) {
+              VBasesOrder.push_back(BaseDecl);
+            }
+          }
+        };
+    CollectPostOrder(RD);
+  }
+
   // Iterate through the virtual bases and lay them out.
   const ASTRecordLayout *PreviousBaseLayout = nullptr;
-  for (const CXXBaseSpecifier &VBase : RD->vbases()) {
-    const CXXRecordDecl *BaseDecl = VBase.getType()->getAsCXXRecordDecl();
+  for (const CXXRecordDecl *BaseDecl : VBasesOrder) {
     const ASTRecordLayout &BaseLayout = Context.getASTRecordLayout(BaseDecl);
     bool HasVtordisp = HasVtorDispSet.contains(BaseDecl);
     // Insert padding between two bases if the left first one is zero sized or
@@ -3623,19 +3644,28 @@ ASTContext::getASTRecordLayout(const RecordDecl *D) const {
       // tail-padding of base classes.  This is ABI-dependent.
       // FIXME: this should be stored in the record layout.
       bool skipTailPadding =
-          mustSkipTailPadding(getTargetInfo().getCXXABI(), RD);
+          mustSkipTailPadding(TargetCXXABI(getCXXABIKind()), RD);
 
       // FIXME: This should be done in FinalizeLayout.
-      CharUnits DataSize =
-          skipTailPadding ? Builder.getSize() : Builder.getDataSize();
-      CharUnits NonVirtualSize =
-          skipTailPadding ? DataSize : Builder.NonVirtualSize;
+      CharUnits DataSize, NonVirtualSize;
+      if (skipTailPadding) {
+        if (RD->getNumVBases() > 0) {
+          NonVirtualSize = Builder.NonVirtualSize.alignTo(Builder.Alignment);
+          DataSize = NonVirtualSize;
+        } else {
+          DataSize = Builder.getSize();
+          NonVirtualSize = DataSize;
+        }
+      } else {
+        DataSize = Builder.getDataSize();
+        NonVirtualSize = Builder.NonVirtualSize;
+      }
       NewEntry = new (*this) ASTRecordLayout(
           *this, Builder.getSize(), Builder.Alignment,
           Builder.PreferredAlignment, Builder.UnadjustedAlignment,
           /*RequiredAlignment : used by MS-ABI)*/
           Builder.Alignment, Builder.HasOwnVFPtr, RD->isDynamicClass(),
-          CharUnits::fromQuantity(-1), Builder.getGCC2VFPtrOffset(),
+          CharUnits::fromQuantity(-1), Builder.getVFPtrOffset(),
           DataSize, Builder.FieldOffsets,
           NonVirtualSize, Builder.NonVirtualAlignment,
           Builder.PreferredNVAlignment,

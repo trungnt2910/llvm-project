@@ -377,7 +377,6 @@ void EHStreamer::computeCallSiteTable(
 ///
 /// Returns the starting symbol of an exception table.
 MCSymbol *EHStreamer::emitExceptionTable() {
-  llvm::errs() << "emitExceptionTable called for MF: " << Asm->MF->getName() << " FunctionNumber: " << Asm->getFunctionNumber() << "\n";
   const MachineFunction *MF = Asm->MF;
   const std::vector<const GlobalValue *> &TypeInfos = MF->getTypeInfos();
   const std::vector<unsigned> &FilterIds = MF->getFilterIds();

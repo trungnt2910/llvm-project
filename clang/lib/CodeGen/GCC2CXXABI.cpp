@@ -36,26 +36,47 @@ using namespace CodeGen;
 
 namespace {
 
-static bool hasOnlyVirtualBases(const CXXRecordDecl *RD) {
-  if (RD->getNumBases() == 0)
-    return false;
-  for (const auto &B : RD->bases()) {
-    if (!B.isVirtual())
-      return false;
-  }
-  return true;
-}
+
 
 static bool hasVPtr(const CXXRecordDecl *RD, ASTContext &Context) {
   if (!RD->isDynamicClass())
     return false;
   const ASTRecordLayout &Layout = Context.getASTRecordLayout(RD);
-  if (Layout.hasOwnVFPtr())
-    return true;
-  if (const CXXRecordDecl *PrimaryBase = Layout.getPrimaryBase()) {
-    if (hasVPtr(PrimaryBase, Context))
+  CharUnits VFPtrOffset = Layout.getVFPtrOffset();
+  return !VFPtrOffset.isNegative() && VFPtrOffset < Layout.getNonVirtualSize();
+}
+
+static bool isDestructorInVirtualBase(const CXXRecordDecl *RD) {
+  for (const auto &I : RD->vbases()) {
+    const CXXRecordDecl *VBase = I.getType()->getAsCXXRecordDecl();
+    if (VBase->hasUserDeclaredDestructor()) {
+      const CXXDestructorDecl *DD = VBase->getDestructor();
+      if (DD && DD->isVirtual())
+        return true;
+    }
+    if (isDestructorInVirtualBase(VBase))
       return true;
   }
+  return false;
+}
+
+static bool isVirtuallyDerivedFromGCC2(const CXXRecordDecl *Derived, const CXXRecordDecl *Base) {
+  Derived = Derived->getCanonicalDecl();
+  Base = Base->getCanonicalDecl();
+  
+  if (Derived == Base)
+    return false;
+    
+  if (Derived->isVirtuallyDerivedFrom(Base))
+    return true;
+    
+  for (const auto &VBase : Derived->vbases()) {
+    const CXXRecordDecl *VBaseRD = VBase.getType()->getAsCXXRecordDecl();
+    if (VBaseRD && VBaseRD->getCanonicalDecl()->isDerivedFrom(Base)) {
+      return true;
+    }
+  }
+  
   return false;
 }
 
@@ -306,38 +327,10 @@ public:
   Address adjustVTableAddress(CodeGenFunction &CGF, Address VTableField,
                               const CXXRecordDecl *RD) override {
     const ASTRecordLayout &Layout = getContext().getASTRecordLayout(RD);
-    CharUnits PtrWidth = getContext().toCharUnitsFromBits(
-        getContext().getTargetInfo().getPointerWidth(LangAS::Default));
-    if (Layout.hasOwnVFPtr()) {
-      CharUnits VFPtrOffset = Layout.getNonVirtualSize() - PtrWidth;
+    CharUnits VFPtrOffset = Layout.getVFPtrOffset();
+    if (!VFPtrOffset.isZero() && !VFPtrOffset.isNegative()) {
       VTableField = CGF.Builder.CreateConstInBoundsByteGEP(
           VTableField.withElementType(CGF.Int8Ty), VFPtrOffset, "vfptr");
-    } else {
-      const CXXRecordDecl *PrimaryBase = Layout.getPrimaryBase();
-      if (PrimaryBase) {
-        const ASTRecordLayout &BaseLayout = getContext().getASTRecordLayout(PrimaryBase);
-        CharUnits VFPtrOffset = BaseLayout.getGCC2VFPtrOffset();
-        if (!VFPtrOffset.isZero())
-          VTableField = CGF.Builder.CreateConstInBoundsByteGEP(
-              VTableField.withElementType(CGF.Int8Ty), VFPtrOffset, "vfptr");
-      } else if (RD->getNumVBases() > 0) {
-        const CXXRecordDecl *VBase = nullptr;
-        for (const auto &Base : RD->vbases()) {
-          const CXXRecordDecl *BaseDecl = Base.getType()->getAsCXXRecordDecl();
-          if (BaseDecl && BaseDecl->isDynamicClass()) {
-            VBase = BaseDecl;
-            break;
-          }
-        }
-        if (VBase) {
-          CharUnits VBaseOffset = Layout.getVBaseClassOffset(VBase);
-          const ASTRecordLayout &VBaseLayout = getContext().getASTRecordLayout(VBase);
-          CharUnits VFPtrOffset = VBaseOffset + VBaseLayout.getGCC2VFPtrOffset();
-          if (!VFPtrOffset.isZero())
-            VTableField = CGF.Builder.CreateConstInBoundsByteGEP(
-                VTableField.withElementType(CGF.Int8Ty), VFPtrOffset, "vfptr");
-        }
-      }
     }
     return VTableField;
   }
@@ -346,8 +339,8 @@ public:
                           const CXXRecordDecl *VTableClass) const override {
     if (Base.getBase() != VTableClass) {
       const ASTRecordLayout &Layout = CGM.getContext().getASTRecordLayout(Base.getBase());
-      if (!Layout.hasOwnVFPtr())
-        return false;
+      CharUnits VFPtrOffset = Layout.getVFPtrOffset();
+      return !VFPtrOffset.isNegative() && VFPtrOffset < Layout.getNonVirtualSize();
     }
     return true;
   }
@@ -366,7 +359,8 @@ public:
       const CXXRecordDecl *PrimaryBase = Layout.getPrimaryBase();
       if (PrimaryBase) {
         const ASTRecordLayout &BaseLayout = getContext().getASTRecordLayout(PrimaryBase);
-        CharUnits VFPtrOffset = BaseLayout.getGCC2VFPtrOffset();
+        CharUnits BaseOffset = Layout.getBaseClassOffset(PrimaryBase);
+        CharUnits VFPtrOffset = BaseOffset + BaseLayout.getVFPtrOffset();
         if (!VFPtrOffset.isZero())
           This = CGF.Builder.CreateConstInBoundsByteGEP(
               This.withElementType(CGF.Int8Ty), VFPtrOffset, "vfptr");
@@ -380,9 +374,11 @@ public:
           }
         }
         if (VBase) {
-          CharUnits VBaseOffset = Layout.getVBaseClassOffset(VBase);
+          llvm::Value *VBaseOffsetVal = GetVirtualBaseClassOffsetImpl(CGF, This, RD, VBase, /*ForceDynamic=*/true);
+          This = Address(CGF.Builder.CreateInBoundsGEP(CGF.Int8Ty, This.emitRawPointer(CGF), VBaseOffsetVal),
+                         CGF.Int8Ty, This.getAlignment());
           const ASTRecordLayout &VBaseLayout = getContext().getASTRecordLayout(VBase);
-          CharUnits VFPtrOffset = VBaseOffset + VBaseLayout.getGCC2VFPtrOffset();
+          CharUnits VFPtrOffset = VBaseLayout.getVFPtrOffset();
           if (!VFPtrOffset.isZero())
             This = CGF.Builder.CreateConstInBoundsByteGEP(
                 This.withElementType(CGF.Int8Ty), VFPtrOffset, "vfptr");
@@ -412,13 +408,7 @@ public:
     }
 
     if (Base != RD) {
-      bool IsVirtual = false;
-      for (const auto &I : RD->vbases()) {
-        if (I.getType()->getAsCXXRecordDecl() == Base) {
-          IsVirtual = true;
-          break;
-        }
-      }
+      bool IsVirtual = isVirtuallyDerivedFromGCC2(RD, Base);
       if (IsVirtual) {
         This = convertAddressOfBaseClass(CGF, This, RD, Base);
       }
@@ -430,7 +420,7 @@ public:
                                      llvm::FunctionCallee Dtor,
                                      llvm::Value *Addr) override {
     if (Dtor.getFunctionType()->getNumParams() == 2) {
-      return CGF.Builder.CreateCall(Dtor, {Addr, CGF.Builder.getInt32(0)});
+      return CGF.Builder.CreateCall(Dtor, {Addr, CGF.Builder.getInt32(2)});
     }
     return CGF.Builder.CreateCall(Dtor, Addr);
   }
@@ -571,23 +561,24 @@ public:
 
   llvm::GlobalVariable *getAddrOfVTable(const CXXRecordDecl *RD,
                                         CharUnits VPtrOffset) override {
+    llvm::GlobalVariable *&VTable = VTables[RD];
+    if (VTable)
+      return VTable;
+
+    CGM.addDeferredVTable(RD);
+
     SmallString<256> Name;
     {
       llvm::raw_svector_ostream Out(Name);
       getMangleContext().mangleCXXVTable(RD, Out);
     }
 
-    if (llvm::GlobalVariable *GV = CGM.getModule().getNamedGlobal(Name))
-      return GV;
-
-    CGM.addDeferredVTable(RD);
-
     llvm::Type *Int8PtrTy = CGM.Int8PtrTy;
     llvm::Type *VTableTy = llvm::ArrayType::get(Int8PtrTy, 3);
-    llvm::GlobalVariable *GV = new llvm::GlobalVariable(
+    VTable = new llvm::GlobalVariable(
         CGM.getModule(), VTableTy, /*isConstant=*/true,
         llvm::GlobalValue::ExternalLinkage, nullptr, Name);
-    return GV;
+    return VTable;
   }
 
   CGCallee getVirtualFunctionPointer(CodeGenFunction &CGF, GlobalDecl GD,
@@ -638,9 +629,7 @@ public:
     if (isa<CXXDestructorDecl>(MethodDecl))
       GD = GD.getWithDtorType(Dtor_Base);
     uint64_t Index = CGM.getGCC2VTableContext().getMethodVTableIndex(GD);
-    llvm::errs() << "getVirtualFunctionPointer: MD=" << MethodDecl->getNameAsString()
-                 << " RD=" << RD->getNameAsString()
-                 << " Index=" << Index << "\n";
+
     llvm::Value *VFuncPtr = CGF.Builder.CreateConstInBoundsGEP1_64(
         Int8PtrTy, VTable, Index);
     llvm::Value *VFunc = CGF.Builder.CreateAlignedLoad(
@@ -664,23 +653,62 @@ public:
     return getFirstVirtualDestructorDecl(cast<CXXDestructorDecl>(Overridden));
   }
 
+  CharUnits getGCC2BaseClassOffset(const CXXRecordDecl *Derived,
+                                   const CXXRecordDecl *Base) {
+    Derived = Derived->getCanonicalDecl();
+    Base = Base->getCanonicalDecl();
+    if (Derived == Base)
+      return CharUnits::Zero();
+
+    const ASTRecordLayout &Layout = getContext().getASTRecordLayout(Derived);
+
+    // 1. Check if Base is a virtual base of Derived
+    for (const auto &VBase : Derived->vbases()) {
+      const CXXRecordDecl *VBaseRD = VBase.getType()->getAsCXXRecordDecl();
+      if (VBaseRD->getCanonicalDecl() == Base) {
+        return Layout.getVBaseClassOffset(Base);
+      }
+    }
+
+    // 2. Search non-virtual path
+    for (const CXXBaseSpecifier &Spec : Derived->bases()) {
+      if (Spec.isVirtual())
+        continue;
+      const CXXRecordDecl *BaseRD = Spec.getType()->getAsCXXRecordDecl();
+      BaseRD = BaseRD->getCanonicalDecl();
+      if (BaseRD == Base) {
+        return Layout.getBaseClassOffset(BaseRD);
+      } else if (BaseRD->isDerivedFrom(Base)) {
+        return Layout.getBaseClassOffset(BaseRD) +
+               getGCC2BaseClassOffset(BaseRD, Base);
+      }
+    }
+
+    // 3. Search inside virtual bases
+    for (const auto &VBase : Derived->vbases()) {
+      const CXXRecordDecl *VBaseRD = VBase.getType()->getAsCXXRecordDecl();
+      VBaseRD = VBaseRD->getCanonicalDecl();
+      if (VBaseRD->isDerivedFrom(Base)) {
+        return Layout.getVBaseClassOffset(VBaseRD) +
+               getGCC2BaseClassOffset(VBaseRD, Base);
+      }
+    }
+
+    llvm_unreachable("Base class not found in inheritance hierarchy!");
+  }
+
   Address convertAddressOfBaseClass(CodeGenFunction &CGF, Address Value,
                                     const CXXRecordDecl *Derived,
                                     const CXXRecordDecl *Base) {
-    const ASTRecordLayout &Layout = getContext().getASTRecordLayout(Derived);
-    bool IsVirtual = false;
-    for (const auto &I : Derived->vbases()) {
-      if (I.getType()->getAsCXXRecordDecl() == Base) {
-        IsVirtual = true;
-        break;
-      }
-    }
+    Derived = Derived->getCanonicalDecl();
+    Base = Base->getCanonicalDecl();
+    bool IsVirtual = isVirtuallyDerivedFromGCC2(Derived, Base);
     
     llvm::Value *OffsetVal;
     if (IsVirtual) {
       OffsetVal = GetVirtualBaseClassOffset(CGF, Value, Derived, Base);
     } else {
-      CharUnits Offset = Layout.getBaseClassOffset(Base);
+      CharUnits Offset = getGCC2BaseClassOffset(Derived, Base);
       OffsetVal = llvm::ConstantInt::get(CGM.PtrDiffTy, Offset.getQuantity());
     }
     
@@ -854,6 +882,38 @@ public:
     return llvm::Function::Create(FTy, llvm::GlobalValue::ExternalLinkage, FnName.str(), &CGM.getModule());
   }
 
+  CharUnits getVBasePointersStartOffset(const CXXRecordDecl *RD) {
+    const ASTRecordLayout &Layout = getContext().getASTRecordLayout(RD);
+
+    const CXXRecordDecl *LastNVBase = nullptr;
+    CharUnits MaxOffset = CharUnits::fromQuantity(-1);
+    CharUnits MaxAlign = CharUnits::One();
+
+    for (const auto &B : RD->bases()) {
+      if (B.isVirtual())
+        continue;
+      const CXXRecordDecl *BaseRD = B.getType()->getAsCXXRecordDecl();
+      const ASTRecordLayout &BaseLayout = getContext().getASTRecordLayout(BaseRD);
+      CharUnits Offset = Layout.getBaseClassOffset(BaseRD);
+      if (Offset > MaxOffset) {
+        MaxOffset = Offset;
+        LastNVBase = BaseRD;
+      }
+      MaxAlign = std::max(MaxAlign, BaseLayout.getNonVirtualAlignment());
+    }
+
+    if (!LastNVBase)
+      return CharUnits::Zero();
+
+    const ASTRecordLayout &LastBaseLayout = getContext().getASTRecordLayout(LastNVBase);
+    CharUnits LastBaseSize = std::max(LastBaseLayout.getNonVirtualSize(), MaxAlign);
+    CharUnits StartOffset = MaxOffset + LastBaseSize;
+
+    CharUnits PtrAlign = getContext().toCharUnitsFromBits(
+        getContext().getTargetInfo().getPointerAlign(LangAS::Default));
+    return StartOffset.alignTo(PtrAlign);
+  }
+
   CharUnits getVBPtrOffset(const CXXRecordDecl *RD, const CXXRecordDecl *VBaseRD) {
     unsigned PtrSize = CGM.getDataLayout().getPointerSize();
     unsigned i = 0;
@@ -878,7 +938,7 @@ public:
           const ASTRecordLayout &Layout = getContext().getASTRecordLayout(RD);
           return Layout.getBaseClassOffset(SharingNVBase) + getVBPtrOffset(SharingNVBase, VBaseRD);
         }
-        return CharUnits::fromQuantity(i * PtrSize);
+        return getVBasePointersStartOffset(RD) + CharUnits::fromQuantity(i * PtrSize);
       }
       if (!Shared)
         i++;
@@ -1204,6 +1264,16 @@ public:
     if (Derived == Base)
       return CharUnits::Zero();
     const ASTRecordLayout &Layout = Context.getASTRecordLayout(Derived);
+
+    // If Base is a virtual base of Derived (direct or indirect), we can get its
+    // offset directly from Derived's layout, avoiding recursive path
+    // calculations that might use intermediate class layouts incorrectly.
+    for (const auto &V : Derived->vbases()) {
+      if (V.getType()->getAsCXXRecordDecl() == Base) {
+        return Layout.getVBaseClassOffset(Base);
+      }
+    }
+
     for (const auto &B : Derived->bases()) {
       const CXXRecordDecl *BaseDecl = B.getType()->getAsCXXRecordDecl();
       CharUnits Offset = B.isVirtual() ? Layout.getVBaseClassOffset(BaseDecl) : Layout.getBaseClassOffset(BaseDecl);
@@ -1235,7 +1305,7 @@ public:
       Values[0] = llvm::ConstantInt::get(CGM.Int16Ty, (ThisAdjustment + BaseOffset).getQuantity());
       Values[1] = llvm::ConstantInt::get(CGM.Int16Ty, Index + 1);
       const ASTRecordLayout &OrigLayout = getContext().getASTRecordLayout(OrigClass);
-      CharUnits VFPtrOffset = OrigLayout.getGCC2VFPtrOffset();
+      CharUnits VFPtrOffset = OrigLayout.getVFPtrOffset();
       llvm::Constant *Delta2Val = llvm::ConstantInt::get(CGM.Int32Ty, (ThisAdjustment + BaseOffset + VFPtrOffset).getQuantity());
       Values[2] = llvm::ConstantExpr::getIntToPtr(Delta2Val, CGM.Int8PtrTy);
     } else {
@@ -1559,24 +1629,17 @@ public:
     }
   }
 
-  llvm::Value *GetVirtualBaseClassOffset(CodeGenFunction &CGF, Address This,
-                                         const CXXRecordDecl *ClassDecl,
-                                         const CXXRecordDecl *BaseClassDecl) override {
+  llvm::Value *GetVirtualBaseClassOffsetImpl(CodeGenFunction &CGF, Address This,
+                                             const CXXRecordDecl *ClassDecl,
+                                             const CXXRecordDecl *BaseClassDecl,
+                                             bool ForceDynamic) {
+    ClassDecl = ClassDecl->getCanonicalDecl();
+    BaseClassDecl = BaseClassDecl->getCanonicalDecl();
     const ASTRecordLayout &Layout = CGF.getContext().getASTRecordLayout(ClassDecl);
-    
+
     auto EmitDynamicVBaseLookup = [&]() -> llvm::Value* {
       unsigned PtrSize = CGM.getDataLayout().getPointerSize();
-      CharUnits NonVirtualBaseSize = CharUnits::Zero();
-      for (const auto &B : ClassDecl->bases()) {
-        if (B.isVirtual()) continue;
-        const CXXRecordDecl *BaseRD = B.getType()->getAsCXXRecordDecl();
-        const ASTRecordLayout &BaseLayout = CGF.getContext().getASTRecordLayout(BaseRD);
-        CharUnits BaseOffset = Layout.getBaseClassOffset(BaseRD);
-        NonVirtualBaseSize = std::max(NonVirtualBaseSize, BaseOffset + BaseLayout.getNonVirtualSize());
-      }
-      CharUnits PtrAlign = CGF.getContext().toCharUnitsFromBits(
-          CGM.getTarget().getPointerAlign(LangAS::Default));
-      CharUnits VBPtrStartOffset = NonVirtualBaseSize.alignTo(PtrAlign);
+      CharUnits VBPtrStartOffset = getVBasePointersStartOffset(ClassDecl);
 
       unsigned i = 0;
       for (const auto &B : llvm::reverse(ClassDecl->bases())) {
@@ -1589,7 +1652,7 @@ public:
           if (NVBaseRD && NVBaseRD->isDerivedFrom(VBaseRD)) { Shared = true; break; }
         }
         if (!Shared) {
-          if (VBaseRD == BaseClassDecl) {
+          if (VBaseRD->getCanonicalDecl() == BaseClassDecl) {
             Address VBPtrAddr = CGF.Builder.CreateConstInBoundsByteGEP(This.withElementType(CGF.Int8Ty), VBPtrStartOffset + CharUnits::fromQuantity(i * PtrSize));
             llvm::Value *VBasePtr = CGF.Builder.CreateLoad(VBPtrAddr.withElementType(CGM.Int8PtrTy), "vbptr");
             llvm::Value *Diff = CGF.Builder.CreatePtrDiff(CGF.Int8Ty, VBasePtr, This.emitRawPointer(CGF), "vboffset");
@@ -1602,36 +1665,69 @@ public:
       return llvm::ConstantInt::get(CGM.PtrDiffTy, Offset.getQuantity());
     };
 
-    if (getStructorImplicitParamValue(CGF)) {
-      llvm::Value *InChrg = getStructorImplicitParamValue(CGF);
-      llvm::Value *IsBaseStructor = CGF.Builder.CreateIsNull(InChrg, "is_base_structor");
-      llvm::BasicBlock *DynamicBB = CGF.createBasicBlock("vboffset.dynamic");
-      llvm::BasicBlock *StaticBB = CGF.createBasicBlock("vboffset.static");
-      llvm::BasicBlock *ContBB = CGF.createBasicBlock("vboffset.cont");
-      CGF.Builder.CreateCondBr(IsBaseStructor, DynamicBB, StaticBB);
+    for (const auto &B : ClassDecl->bases()) {
+      const CXXRecordDecl *BaseRD = B.getType()->getAsCXXRecordDecl();
 
-      CGF.EmitBlock(DynamicBB);
-      llvm::Value *DynamicDiff = EmitDynamicVBaseLookup();
-      CGF.EmitBranch(ContBB);
-
-      CGF.EmitBlock(StaticBB);
-      CharUnits Offset = Layout.getVBaseClassOffset(BaseClassDecl);
-      llvm::Value *StaticDiff = llvm::ConstantInt::get(CGM.PtrDiffTy, Offset.getQuantity());
-      CGF.EmitBranch(ContBB);
-
-      CGF.EmitBlock(ContBB);
-      llvm::PHINode *PHI = CGF.Builder.CreatePHI(CGM.PtrDiffTy, 2, "vboffset.phi");
-      PHI->addIncoming(DynamicDiff, DynamicBB);
-      PHI->addIncoming(StaticDiff, StaticBB);
-      return PHI;
+      if (BaseRD && BaseRD->getCanonicalDecl() != BaseClassDecl->getCanonicalDecl() && BaseRD->isDerivedFrom(BaseClassDecl)) {
+        llvm::Value *BaseOffsetVal;
+        Address SubThis = Address::invalid();
+        if (B.isVirtual()) {
+          BaseOffsetVal = GetVirtualBaseClassOffsetImpl(CGF, This, ClassDecl, BaseRD, ForceDynamic);
+          llvm::Value *SubThisPtr = CGF.Builder.CreateInBoundsGEP(CGF.Int8Ty, This.withElementType(CGF.Int8Ty).emitRawPointer(CGF), BaseOffsetVal);
+          SubThis = Address(SubThisPtr, CGF.Int8Ty, This.getAlignment());
+        } else {
+          CharUnits BaseOffset = getGCC2BaseClassOffset(ClassDecl, BaseRD);
+          BaseOffsetVal = llvm::ConstantInt::get(CGM.PtrDiffTy, BaseOffset.getQuantity());
+          SubThis = CGF.Builder.CreateConstInBoundsByteGEP(This.withElementType(CGF.Int8Ty), BaseOffset);
+        }
+        llvm::Value *SubOffsetVal = GetVirtualBaseClassOffsetImpl(CGF, SubThis, BaseRD, BaseClassDecl, ForceDynamic && BaseRD->isVirtuallyDerivedFrom(BaseClassDecl));
+        return CGF.Builder.CreateAdd(BaseOffsetVal, SubOffsetVal);
+      }
     }
 
-    if (ClassDecl->getNumVBases() > 0) {
+    if (ForceDynamic) {
       return EmitDynamicVBaseLookup();
     }
 
-    CharUnits Offset = Layout.getVBaseClassOffset(BaseClassDecl);
-    return llvm::ConstantInt::get(CGM.PtrDiffTy, Offset.getQuantity());
+    if (ClassDecl->isVirtuallyDerivedFrom(BaseClassDecl)) {
+      return EmitDynamicVBaseLookup();
+    } else {
+      CharUnits Offset = Layout.getBaseClassOffset(BaseClassDecl);
+      return llvm::ConstantInt::get(CGM.PtrDiffTy, Offset.getQuantity());
+    }
+
+    if (getStructorImplicitParamValue(CGF)) {
+      llvm::Value *InChrg = getStructorImplicitParamValue(CGF);
+      llvm::Value *IsBaseStructor = CGF.Builder.CreateIsNull(InChrg, "is_base_structor");
+
+      llvm::BasicBlock *DynamicBB = CGF.createBasicBlock("vboffset.dynamic");
+      llvm::BasicBlock *StaticBB = CGF.createBasicBlock("vboffset.static");
+      llvm::BasicBlock *ContBB = CGF.createBasicBlock("vboffset.cont");
+
+      CGF.Builder.CreateCondBr(IsBaseStructor, DynamicBB, StaticBB);
+
+      CGF.EmitBlock(DynamicBB);
+      llvm::Value *DynamicDiff = GetVirtualBaseClassOffsetImpl(CGF, This, ClassDecl, BaseClassDecl, true);
+      llvm::BasicBlock *DynamicEndBB = CGF.Builder.GetInsertBlock();
+      CGF.Builder.CreateBr(ContBB);
+
+      CGF.EmitBlock(StaticBB);
+      llvm::Value *StaticDiff = GetVirtualBaseClassOffsetImpl(CGF, This, ClassDecl, BaseClassDecl, false);
+      llvm::BasicBlock *StaticEndBB = CGF.Builder.GetInsertBlock();
+      CGF.Builder.CreateBr(ContBB);
+
+      CGF.EmitBlock(ContBB);
+      llvm::PHINode *PHI = CGF.Builder.CreatePHI(CGM.PtrDiffTy, 2, "vboffset.phi");
+      PHI->addIncoming(DynamicDiff, DynamicEndBB);
+      PHI->addIncoming(StaticDiff, StaticEndBB);
+      return PHI;
+    }
+  }
+
+  llvm::Value *GetVirtualBaseClassOffset(CodeGenFunction &CGF, Address This,
+                                         const CXXRecordDecl *ClassDecl,
+                                         const CXXRecordDecl *BaseClassDecl) override {
+    return GetVirtualBaseClassOffsetImpl(CGF, This, ClassDecl, BaseClassDecl, true);
   }
 
   void EmitCXXConstructors(const CXXConstructorDecl *D) override {
@@ -1700,7 +1796,7 @@ public:
         return NonVirtualBaseSize.alignTo(PtrAlign);
       };
 
-      auto InitSubobjectVBases = [&](const CXXRecordDecl *SubRD, CharUnits SubOffset) {
+      std::function<void(const CXXRecordDecl*, CharUnits)> InitSubobjectVBases = [&](const CXXRecordDecl *SubRD, CharUnits SubOffset) {
         if (SubRD->getNumVBases() == 0) return;
         unsigned bi = 0;
         Address SubThis = CGF.Builder.CreateConstInBoundsByteGEP(This.withElementType(CGF.Int8Ty), SubOffset);
@@ -1722,6 +1818,13 @@ public:
             CGF.Builder.CreateStore(VBasePtr, VBPtrAddr.withElementType(CGM.Int8PtrTy));
             bi++;
           }
+        }
+        // Recursively initialize non-virtual bases of SubRD to cover indirect vbases.
+        for (const auto &B : SubRD->bases()) {
+          if (B.isVirtual()) continue;
+          const CXXRecordDecl *BaseRD = B.getType()->getAsCXXRecordDecl();
+          const ASTRecordLayout &SubLayout = CGF.getContext().getASTRecordLayout(SubRD);
+          InitSubobjectVBases(BaseRD, SubOffset + SubLayout.getBaseClassOffset(BaseRD));
         }
       };
 
@@ -1973,13 +2076,45 @@ public:
     llvm::Constant *ZeroPtr = llvm::ConstantExpr::getIntToPtr(Zero, Int8PtrTy);
 
     QualType ClassType = CGM.getContext().getCanonicalTagType(RD);
-    llvm::Constant *RTTI = getAddrOfRTTIFunction(ClassType);
+    llvm::Constant *RTTI = nullptr;
+    if (CGM.shouldEmitRTTI())
+      RTTI = getAddrOfRTTIFunction(ClassType);
 
     unsigned nextVTableThunkIndex = 0;
 
     for (unsigned vtableIndex = 0; vtableIndex < VTLayout.getNumVTables(); ++vtableIndex) {
-      llvm::errs() << "emitVTableDefinitions: RD=" << RD->getNameAsString() 
-                   << " vtableIndex=" << vtableIndex << "/" << VTLayout.getNumVTables() << "\n";
+      if (vtableIndex == 0) {
+        size_t VTableSize = VTLayout.getVTableSize(vtableIndex);
+        if (VTableSize <= 2) {
+          bool HasPrimaryVPtr = true;
+          if (RD->getNumBases() > 0) {
+            bool HasOnlyVirtualBases = true;
+            for (const auto &B : RD->bases()) {
+              if (!B.isVirtual()) {
+                HasOnlyVirtualBases = false;
+                break;
+              }
+            }
+            if (HasOnlyVirtualBases) {
+              bool IntroducesNewVirtualFunctions = false;
+              for (const auto *MD : RD->methods()) {
+                if (MD->isVirtual()) {
+                  if (MD->size_overridden_methods() == 0) {
+                    IntroducesNewVirtualFunctions = true;
+                    break;
+                  }
+                }
+              }
+              if (!IntroducesNewVirtualFunctions) {
+                HasPrimaryVPtr = false;
+              }
+            }
+          }
+          if (!HasPrimaryVPtr) {
+            continue;
+          }
+        }
+      }
 
       SmallString<256> Name;
       {
@@ -1987,12 +2122,18 @@ public:
         getMangleContext().mangleCXXVTable(RD, Out);
       }
 
+      bool InjectDtor = false;
+      CharUnits BaseOffset = CharUnits::Zero();
+      const CXXRecordDecl *BaseRD = nullptr;
       if (vtableIndex > 0) {
-        const CXXRecordDecl *BaseRD = nullptr;
         for (auto &AP : VTLayout.getAddressPoints()) {
           if (AP.second.VTableIndex == vtableIndex) {
-            BaseRD = AP.first.getBase();
-            break;
+            const CXXRecordDecl *Cand = AP.first.getBase();
+            if (!BaseRD) {
+              BaseRD = Cand;
+            } else if (Cand->isDerivedFrom(BaseRD)) {
+              BaseRD = Cand;
+            }
           }
         }
         if (BaseRD) {
@@ -2003,22 +2144,50 @@ public:
           }
           Name += ".";
           Name += BaseVTName.str().substr(5);
+
+          if (BaseRD->getDestructor() && BaseRD->getDestructor()->isVirtual()) {
+            size_t vtableStart = VTLayout.getVTableOffset(vtableIndex);
+            size_t vtableEnd = vtableStart + VTLayout.getVTableSize(vtableIndex);
+            bool HasDtor = false;
+            for (size_t i = vtableStart; i < vtableEnd; ++i) {
+              auto &comp = VTLayout.vtable_components()[i];
+              if (comp.getKind() == VTableComponent::CK_CompleteDtorPointer ||
+                  comp.getKind() == VTableComponent::CK_DeletingDtorPointer) {
+                HasDtor = true;
+                break;
+              }
+            }
+            if (!HasDtor && !isDestructorInVirtualBase(BaseRD)) {
+              InjectDtor = true;
+              BaseOffset = getGCC2BaseClassOffset(RD, BaseRD);
+            }
+          }
         }
       }
 
       llvm::GlobalVariable *VTable = CGM.getModule().getNamedGlobal(Name);
       if (!VTable) {
-        llvm::Type *VTableTy = llvm::ArrayType::get(Int8PtrTy, VTLayout.getVTableSize(vtableIndex));
+        size_t VTableSize = VTLayout.getVTableSize(vtableIndex);
+        if (InjectDtor)
+          VTableSize++;
+        llvm::Type *VTableTy = llvm::ArrayType::get(Int8PtrTy, VTableSize);
+
         VTable = new llvm::GlobalVariable(
             CGM.getModule(), VTableTy, /*isConstant=*/true,
             llvm::GlobalValue::ExternalLinkage, nullptr, Name);
       }
-      if (!VTable->isDeclaration())
-        continue;
-
-      SmallVector<llvm::Constant *, 8> InitElems;
       size_t vtableStart = VTLayout.getVTableOffset(vtableIndex);
       size_t vtableEnd = vtableStart + VTLayout.getVTableSize(vtableIndex);
+
+      if (!VTable->isDeclaration()) {
+        while (nextVTableThunkIndex < VTLayout.vtable_thunks().size() &&
+               VTLayout.vtable_thunks()[nextVTableThunkIndex].first < vtableEnd) {
+          nextVTableThunkIndex++;
+        }
+        continue;
+      }
+
+      SmallVector<llvm::Constant *, 8> InitElems;
 
       for (size_t i = vtableStart; i < vtableEnd; ++i) {
         auto &comp = VTLayout.vtable_components()[i];
@@ -2026,7 +2195,7 @@ public:
         case VTableComponent::CK_VCallOffset:
         case VTableComponent::CK_VBaseOffset:
         case VTableComponent::CK_OffsetToTop:
-          if (vtableIndex > 0 && comp.getKind() == VTableComponent::CK_OffsetToTop) {
+          if (comp.getKind() == VTableComponent::CK_OffsetToTop) {
             CharUnits offset = comp.getOffsetToTop();
             llvm::Constant *offsetVal = llvm::ConstantInt::getSigned(CGM.Int32Ty, offset.getQuantity());
             InitElems.push_back(llvm::ConstantExpr::getIntToPtr(offsetVal, Int8PtrTy));
@@ -2035,7 +2204,18 @@ public:
           }
           break;
         case VTableComponent::CK_RTTI:
-          InitElems.push_back(llvm::ConstantExpr::getBitCast(RTTI, Int8PtrTy));
+          InitElems.push_back(RTTI ? llvm::ConstantExpr::getBitCast(RTTI, Int8PtrTy) : ZeroPtr);
+          if (InjectDtor) {
+            auto *DD = RD->getDestructor();
+            GlobalDecl GD(DD, Dtor_Deleting);
+            ThunkInfo Thunk;
+            Thunk.This.NonVirtual = -BaseOffset.getQuantity();
+            Thunk.ThisType = CGM.getContext().getCanonicalTagType(BaseRD).getTypePtr();
+            Thunk.Method = DD;
+            (void)CGM.getAddrOfCXXStructor(GD);
+            llvm::Constant *ThunkFunc = CGVT.maybeEmitThunk(GD, Thunk, /*ForVTable=*/true);
+            InitElems.push_back(llvm::ConstantExpr::getBitCast(ThunkFunc, Int8PtrTy));
+          }
           break;
         case VTableComponent::CK_CompleteDtorPointer: {
           bool IsThunk = nextVTableThunkIndex < VTLayout.vtable_thunks().size() &&
@@ -2101,7 +2281,7 @@ public:
           llvm::cast<llvm::ArrayType>(VTableTy), InitElems);
 
       llvm::GlobalVariable *OldVTable = VTable;
-      StringRef OldName = OldVTable->getName();
+      std::string OldName = OldVTable->getName().str();
       OldVTable->setName("");
       VTable = new llvm::GlobalVariable(
           CGM.getModule(), VTableTy, /*isConstant=*/true,
@@ -2196,7 +2376,7 @@ public:
                        llvm::GlobalVariable *var,
                        bool shouldPerformInit) override {
     CGBuilderTy &Builder = CGF.Builder;
-    bool NonTemplateInline = D.isInline() && !isTemplateInstantiation(D.getTemplateSpecializationKind());
+
     bool threadsafe = false; // Legacy GCC 2.x ABI does not use Itanium __cxa_guard_* functions.
 
     if (CGF.CurFn) {
@@ -2603,7 +2783,7 @@ public:
           if (!VBaseRD->hasDefinition())
             continue;
           CXXDestructorDecl *VBaseDD = VBaseRD->getDestructor();
-          if (!VBaseDD || VBaseDD->isTrivial())
+          if (!VBaseDD || VBaseRD->hasTrivialDestructor())
             continue;
 
           GlobalDecl VBaseGD(VBaseDD, Dtor_Base);
@@ -2647,6 +2827,8 @@ public:
       Builder.CreateRet(This);
 
       CGM.maybeSetTrivialComdat(*MD, *Wrapper);
+      Fn->replaceAllUsesWith(Wrapper);
+      BaseCall->setCalledFunction(Fn);
     } else {
       CGM.maybeSetTrivialComdat(*MD, *Fn);
     }

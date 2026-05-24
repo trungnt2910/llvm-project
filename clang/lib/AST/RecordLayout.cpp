@@ -46,7 +46,7 @@ ASTRecordLayout::ASTRecordLayout(
     const ASTContext &Ctx, CharUnits size, CharUnits alignment,
     CharUnits preferredAlignment, CharUnits unadjustedAlignment,
     CharUnits requiredAlignment, bool hasOwnVFPtr, bool hasExtendableVFPtr,
-    CharUnits vbptroffset, CharUnits gcc2vfptroffset, CharUnits datasize,
+    CharUnits vbptroffset, CharUnits vfptroffset, CharUnits datasize,
     ArrayRef<uint64_t> fieldoffsets,
     CharUnits nonvirtualsize, CharUnits nonvirtualalignment,
     CharUnits preferrednvalignment, CharUnits SizeOfLargestEmptySubobject,
@@ -71,7 +71,7 @@ ASTRecordLayout::ASTRecordLayout(
   CXXInfo->VBaseOffsets = VBaseOffsets;
   CXXInfo->HasOwnVFPtr = hasOwnVFPtr;
   CXXInfo->VBPtrOffset = vbptroffset;
-  CXXInfo->GCC2VFPtrOffset = gcc2vfptroffset;
+  CXXInfo->VFPtrOffset = vfptroffset;
   CXXInfo->HasExtendableVFPtr = hasExtendableVFPtr;
   CXXInfo->BaseSharingVBPtr = BaseSharingVBPtr;
   CXXInfo->EndsWithZeroSizedObject = EndsWithZeroSizedObject;

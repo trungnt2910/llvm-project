@@ -289,14 +289,17 @@ public:
 
     /// Only allocate objects in the tail padding of a base class if
     /// the base class is not POD according to the rules of C++11.
-    UseTailPaddingUnlessPOD11
+    UseTailPaddingUnlessPOD11,
+
+    /// Only allocate objects in the tail padding of a base class if
+    /// the base class is not POD according to C++ TR1 AND is not dynamic/polymorphic.
+    UseTailPaddingUnlessPODOrDynamic
   };
   TailPaddingUseRules getTailPaddingUseRules() const {
     switch (getKind()) {
     // To preserve binary compatibility, the generic Itanium ABI has
     // permanently locked the definition of POD to the rules of C++ TR1,
     // and that trickles down to derived ABIs.
-    case GCC2:
     case GenericItanium:
     case GenericAArch64:
     case GenericARM:
@@ -304,6 +307,9 @@ public:
     case GenericMIPS:
     case XL:
       return UseTailPaddingUnlessPOD03;
+
+    case GCC2:
+      return UseTailPaddingUnlessPODOrDynamic;
 
     // AppleARM64 and WebAssembly use the C++11 POD rules.  They do not honor
     // the Itanium exception about classes with over-large bitfields.
