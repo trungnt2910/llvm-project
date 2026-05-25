@@ -2311,7 +2311,8 @@ static bool canEmitDelegateCallArgs(CodeGenFunction &CGF,
   if (Ctor->isVariadic())
     return false;
 
-  if (CGF.getTarget().getCXXABI().areArgsDestroyedLeftToRightInCallee()) {
+  TargetCXXABI CXXABI(CGF.getContext().getCXXABIKind());
+  if (CXXABI.areArgsDestroyedLeftToRightInCallee()) {
     // If the parameters are callee-cleanup, it's not safe to forward.
     for (auto *P : Ctor->parameters())
       if (P->needsDestruction(CGF.getContext()))

@@ -190,7 +190,7 @@ public:
   /// have access to the destructor, while only the caller needs the
   /// destructor if this is false.
   bool areArgsDestroyedLeftToRightInCallee() const {
-    return isMicrosoft();
+    return isMicrosoft() || isGCC2();
   }
 
   /// Does this ABI have different entrypoints for complete-object

@@ -105,7 +105,8 @@ static Value *handleHlslSplitdouble(const CallExpr *E, CodeGenFunction *CGF) {
   LValue Op2TmpLValue =
       CGF->EmitHLSLOutArgExpr(OutArg2, Args, OutArg2->getType());
 
-  if (CGF->getTarget().getCXXABI().areArgsDestroyedLeftToRightInCallee())
+  TargetCXXABI CXXABI(CGF->getContext().getCXXABIKind());
+  if (CXXABI.areArgsDestroyedLeftToRightInCallee())
     Args.reverseWritebacks();
 
   Value *LowBits = nullptr;

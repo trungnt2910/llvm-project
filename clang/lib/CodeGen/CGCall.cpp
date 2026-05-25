@@ -3736,7 +3736,8 @@ void CodeGenFunction::EmitFunctionProlog(const CGFunctionInfo &FI,
     }
   }
 
-  if (getTarget().getCXXABI().areArgsDestroyedLeftToRightInCallee()) {
+  TargetCXXABI CXXABI(getContext().getCXXABIKind());
+  if (CXXABI.areArgsDestroyedLeftToRightInCallee()) {
     for (int I = Args.size() - 1; I >= 0; --I)
       EmitParmDecl(*Args[I], ArgVals[I], I + 1);
   } else {
@@ -4932,8 +4933,9 @@ void CodeGenFunction::EmitCallArgs(
   // case, there are certain language constructs that require left-to-right
   // evaluation, and in those cases we consider the evaluation order requirement
   // to trump the "destruction order is reverse construction order" guarantee.
+  TargetCXXABI CXXABI(getContext().getCXXABIKind());
   bool LeftToRight =
-      CGM.getTarget().getCXXABI().areArgsDestroyedLeftToRightInCallee()
+      CXXABI.areArgsDestroyedLeftToRightInCallee()
           ? Order == EvaluationOrder::ForceLeftToRight
           : Order != EvaluationOrder::ForceRightToLeft;
 

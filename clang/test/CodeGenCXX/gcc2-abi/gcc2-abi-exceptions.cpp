@@ -33,3 +33,15 @@ void test_static_local() {
 // CHECK: call {{.*}} @__7Derived{{.*}}
 // CHECK: call i32 @atexit(ptr @__dtor_static_d)
 // CHECK: store i32 1, ptr @__tmp_0, align 4
+
+// 4. Verify const reference catching for classes uses the unqualified RTTI function in EH tables
+void test_const_ref_catch() {
+  try {
+    throw Derived();
+  } catch (const Derived &e) {
+  }
+}
+// CHECK-LABEL: define {{.*}} @test_const_ref_catch__Fv(
+// CHECK: landingpad { ptr, i32 }
+// CHECK-NEXT: catch ptr @__tf7Derived
+// CHECK: call i32 @llvm.eh.typeid.for.p0(ptr @__tf7Derived)

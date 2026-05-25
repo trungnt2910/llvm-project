@@ -7470,7 +7470,8 @@ void Sema::CheckCompletedCXXClass(Scope *S, CXXRecordDecl *Record) {
   // destructor, the record is destructed in the callee. This happens only when
   // the record or one of its subobjects has a field annotated with trivial_abi
   // or a field qualified with ObjC __strong/__weak.
-  if (Context.getTargetInfo().getCXXABI().areArgsDestroyedLeftToRightInCallee())
+  TargetCXXABI CXXABI(Context.getCXXABIKind());
+  if (CXXABI.areArgsDestroyedLeftToRightInCallee())
     Record->setParamDestroyedInCallee(true);
   else if (Record->hasNonTrivialDestructor())
     Record->setParamDestroyedInCallee(CanPass);

@@ -1142,7 +1142,10 @@ public:
 
   CatchTypeInfo
   getAddrOfCXXCatchHandlerType(QualType Ty, QualType CatchHandlerType) override {
-    return CatchTypeInfo{getAddrOfRTTIFunction(CatchHandlerType.getNonReferenceType()), 0};
+    QualType InnerTy = CatchHandlerType.getNonReferenceType();
+    if (InnerTy->isRecordType())
+      InnerTy = InnerTy.getUnqualifiedType();
+    return CatchTypeInfo{getAddrOfRTTIFunction(InnerTy), 0};
   }
 
   bool shouldTypeidBeNullChecked(QualType SrcRecordTy) override {
