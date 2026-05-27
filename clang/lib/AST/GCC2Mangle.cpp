@@ -748,6 +748,17 @@ void GCC2MangleContextImpl::mangleParameterList(ArrayRef<const ParmVarDecl *> Pa
     flushRepeats(NRepeats, LastType);
     NRepeats = 0;
   }
+
+  if (!Parameters.empty()) {
+    const DeclContext *DC = Parameters[0]->getDeclContext();
+    if (const auto *FD = dyn_cast_or_null<FunctionDecl>(DC)) {
+      if (const auto *FPT = FD->getType()->getAs<FunctionProtoType>()) {
+        if (FPT->isVariadic()) {
+          Out << "e";
+        }
+      }
+    }
+  }
 }
 
 void GCC2MangleContextImpl::mangleType(QualType T, raw_ostream &Out, bool IsTopLevelParm) {
@@ -898,6 +909,8 @@ void GCC2MangleContextImpl::mangleType(QualType T, raw_ostream &Out, bool IsTopL
     else
       for (const auto &ParamTy : FPT->param_types())
         mangleType(ParamTy, Out);
+    if (FPT->isVariadic())
+      Out << "e";
     Out << "_";
     mangleType(FPT->getReturnType(), Out);
     break;

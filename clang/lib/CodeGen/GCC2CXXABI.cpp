@@ -761,6 +761,11 @@ public:
   }
 
   void emitRethrow(CodeGenFunction &CGF, bool isNoReturn) override {
+    // Call __uncatch_exception before re-throwing to update the GCC2 EH runtime state
+    llvm::FunctionCallee UncatchFn = CGM.CreateRuntimeFunction(
+        llvm::FunctionType::get(CGF.VoidTy, false), "__uncatch_exception");
+    CGF.EmitRuntimeCallOrInvoke(UncatchFn);
+
     bool IsSJLJ = CGM.getCodeGenOpts().hasSjLjExceptions();
     const char *ThrowName = IsSJLJ ? "__sjthrow" : "__throw";
     llvm::FunctionCallee ThrowFn = CGM.CreateRuntimeFunction(
@@ -2821,9 +2826,32 @@ public:
       Builder.CreateCondBr(CondDelete, DeleteBB, EndBB);
 
       Builder.SetInsertPoint(DeleteBB);
-      llvm::FunctionType *DeleteFTy = llvm::FunctionType::get(CGM.VoidTy, {CGM.Int8PtrTy}, false);
-      llvm::FunctionCallee DeleteFn = CGM.CreateRuntimeFunction(DeleteFTy, "__builtin_delete");
-      Builder.CreateCall(DeleteFn, {This});
+      const FunctionDecl *OperatorDelete = nullptr;
+      const CXXRecordDecl *RD = DD->getParent();
+      DeclarationName Name = CGM.getContext().DeclarationNames.getCXXOperatorName(OO_Delete);
+      auto LookupRes = RD->lookup(Name);
+      if (!LookupRes.empty()) {
+        OperatorDelete = dyn_cast<FunctionDecl>(LookupRes.front());
+      }
+
+      if (OperatorDelete) {
+        llvm::FunctionType *DeleteFTy = cast<llvm::FunctionType>(
+          CGM.getTypes().GetFunctionType(
+            CGM.getTypes().arrangeGlobalDeclaration(GlobalDecl(OperatorDelete))));
+        llvm::Constant *DeleteFn = CGM.GetAddrOfFunction(GlobalDecl(OperatorDelete));
+        if (OperatorDelete->getNumParams() > 1) {
+          // Sized delete!
+          llvm::Value *Size = llvm::ConstantInt::get(CGM.SizeTy,
+            CGM.getContext().getTypeSizeInChars(CGM.getContext().getCanonicalTagType(RD)).getQuantity());
+          Builder.CreateCall(DeleteFTy, DeleteFn, {This, Size});
+        } else {
+          Builder.CreateCall(DeleteFTy, DeleteFn, {This});
+        }
+      } else {
+        llvm::FunctionType *DeleteFTy = llvm::FunctionType::get(CGM.VoidTy, {CGM.Int8PtrTy}, false);
+        llvm::FunctionCallee DeleteFn = CGM.CreateRuntimeFunction(DeleteFTy, "__builtin_delete");
+        Builder.CreateCall(DeleteFTy, DeleteFn.getCallee(), {This});
+      }
       Builder.CreateBr(EndBB);
 
       Builder.SetInsertPoint(EndBB);

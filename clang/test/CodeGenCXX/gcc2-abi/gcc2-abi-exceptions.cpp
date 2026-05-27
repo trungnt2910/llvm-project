@@ -45,3 +45,17 @@ void test_const_ref_catch() {
 // CHECK: landingpad { ptr, i32 }
 // CHECK-NEXT: catch ptr @__tf7Derived
 // CHECK: call i32 @llvm.eh.typeid.for.p0(ptr @__tf7Derived)
+
+// 5. Verify nested re-throwing calls __uncatch_exception before __throw
+void test_rethrow() {
+  try {
+    throw 42;
+  } catch (int e) {
+    throw;
+  }
+}
+// CHECK-LABEL: define {{.*}} @test_rethrow__Fv(
+// CHECK: landingpad { ptr, i32 }
+// CHECK: invoke void @__uncatch_exception()
+// CHECK: invoke void @__throw()
+// CHECK: unreachable

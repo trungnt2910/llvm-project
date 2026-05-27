@@ -649,6 +649,14 @@ CGRecordLowering::accumulateBitFields(bool isNonVirtualBaseType,
           }
 
           LimitOffset = ScissorOffset;
+          if (RD) {
+            const ASTRecordLayout &ASTLayout = Context.getASTRecordLayout(RD);
+            if (ASTLayout.hasOwnVFPtr()) {
+              CharUnits VFPtr = ASTLayout.getVFPtrOffset();
+              if (VFPtr > BeginOffset && VFPtr < LimitOffset)
+                LimitOffset = VFPtr;
+            }
+          }
         FoundLimit:;
 
           CharUnits TypeSize = getSize(Type);
