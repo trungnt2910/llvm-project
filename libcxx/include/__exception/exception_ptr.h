@@ -29,7 +29,7 @@
 _LIBCPP_PUSH_MACROS
 #include <__undef_macros>
 
-#ifndef _LIBCPP_ABI_MICROSOFT
+#if !defined(_LIBCPP_ABI_MICROSOFT) && !defined(_LIBCPP_ABI_GCC2)
 
 #  if _LIBCPP_HAS_EXCEPTIONS && _LIBCPP_HAS_RTTI && _LIBCPP_AVAILABILITY_HAS_INIT_PRIMARY_EXCEPTION
 
@@ -62,7 +62,7 @@ _LIBCPP_OVERRIDABLE_FUNC_VIS __cxa_exception* __cxa_init_primary_exception(
 _LIBCPP_BEGIN_UNVERSIONED_NAMESPACE_STD
 _LIBCPP_BEGIN_EXPLICIT_ABI_ANNOTATIONS
 
-#ifndef _LIBCPP_ABI_MICROSOFT
+#if !defined(_LIBCPP_ABI_MICROSOFT) && !defined(_LIBCPP_ABI_GCC2)
 
 inline _LIBCPP_HIDE_FROM_ABI void swap(exception_ptr& __x, exception_ptr& __y) _NOEXCEPT;
 
@@ -178,7 +178,7 @@ _LIBCPP_HIDE_FROM_ABI exception_ptr make_exception_ptr(_Ep) _NOEXCEPT {
 }
 #  endif // _LIBCPP_HAS_EXCEPTIONS
 
-#else // defined(_LIBCPP_ABI_MICROSOFT)
+#elif defined(_LIBCPP_ABI_MICROSOFT)
 
 class _LIBCPP_EXPORTED_FROM_ABI exception_ptr {
   _LIBCPP_DIAGNOSTIC_PUSH
@@ -219,7 +219,56 @@ _LIBCPP_HIDE_FROM_ABI exception_ptr make_exception_ptr(_Ep __e) _NOEXCEPT {
   return __copy_exception_ptr(std::addressof(__e), __GetExceptionInfo(__e));
 }
 
-#endif // defined(_LIBCPP_ABI_MICROSOFT)
+#elif defined(_LIBCPP_ABI_GCC2)
+
+class _LIBCPP_EXPORTED_FROM_ABI exception_ptr {
+public:
+  void* __ptr_;
+
+public:
+  _LIBCPP_HIDE_FROM_ABI exception_ptr() _NOEXCEPT : __ptr_() {}
+  _LIBCPP_HIDE_FROM_ABI exception_ptr(nullptr_t) _NOEXCEPT : __ptr_() {}
+  exception_ptr(const exception_ptr& __other) _NOEXCEPT;
+  _LIBCPP_HIDE_FROM_ABI exception_ptr(exception_ptr&& __other) _NOEXCEPT : __ptr_(__other.__ptr_) {
+    __other.__ptr_ = nullptr;
+  }
+  exception_ptr& operator=(const exception_ptr& __other) _NOEXCEPT;
+  _LIBCPP_HIDE_FROM_ABI exception_ptr& operator=(exception_ptr&& __other) _NOEXCEPT {
+    exception_ptr __tmp(std::move(__other));
+    std::swap(__tmp.__ptr_, __ptr_);
+    return *this;
+  }
+  ~exception_ptr() _NOEXCEPT;
+
+  _LIBCPP_HIDE_FROM_ABI explicit operator bool() const _NOEXCEPT { return __ptr_ != nullptr; }
+
+  friend _LIBCPP_HIDE_FROM_ABI bool operator==(const exception_ptr& __x, const exception_ptr& __y) _NOEXCEPT {
+    return __x.__ptr_ == __y.__ptr_;
+  }
+  friend _LIBCPP_HIDE_FROM_ABI bool operator!=(const exception_ptr& __x, const exception_ptr& __y) _NOEXCEPT {
+    return !(__x == __y);
+  }
+  friend _LIBCPP_HIDE_FROM_ABI void swap(exception_ptr& __x, exception_ptr& __y) _NOEXCEPT {
+    std::swap(__x.__ptr_, __y.__ptr_);
+  }
+
+  static exception_ptr __from_native_exception_pointer(void*) _NOEXCEPT;
+};
+
+_LIBCPP_EXPORTED_FROM_ABI exception_ptr current_exception() _NOEXCEPT;
+[[__noreturn__]] _LIBCPP_EXPORTED_FROM_ABI void rethrow_exception(exception_ptr);
+
+// PRISTINE, CLEAN GCC2 C++ TRY-CATCH PROPAGATION TEMPLATE!
+template <class _Ep>
+_LIBCPP_HIDE_FROM_ABI exception_ptr make_exception_ptr(_Ep __e) _NOEXCEPT {
+  try {
+    throw __e;
+  } catch (...) {
+    return current_exception();
+  }
+}
+
+#endif
 
 _LIBCPP_END_EXPLICIT_ABI_ANNOTATIONS
 _LIBCPP_END_UNVERSIONED_NAMESPACE_STD

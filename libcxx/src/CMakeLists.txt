@@ -42,6 +42,7 @@ set(LIBCXX_SOURCES
   stdexcept.cpp
   string.cpp
   support/runtime/exception_fallback.ipp
+  support/runtime/exception_gcc2.ipp
   support/runtime/exception_glibcxx.ipp
   support/runtime/exception_libcxxabi.ipp
   support/runtime/exception_libcxxrt.ipp
@@ -49,6 +50,7 @@ set(LIBCXX_SOURCES
   support/runtime/exception_pointer_cxxabi.ipp
   support/runtime/exception_pointer_glibcxx.ipp
   support/runtime/exception_pointer_msvc.ipp
+  support/runtime/exception_pointer_gcc2.ipp
   support/runtime/exception_pointer_unimplemented.ipp
   support/runtime/stdexcept_default.ipp
   support/runtime/stdexcept_vcruntime.ipp

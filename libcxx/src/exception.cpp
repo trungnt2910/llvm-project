@@ -14,6 +14,9 @@
 #if defined(_LIBCPP_ABI_MICROSOFT)
 #  include "support/runtime/exception_msvc.ipp"
 #  include "support/runtime/exception_pointer_msvc.ipp"
+#elif defined(_LIBCPP_ABI_GCC2)
+#  include "support/runtime/exception_gcc2.ipp"
+#  include "support/runtime/exception_pointer_gcc2.ipp"
 #elif defined(LIBCXX_BUILDING_LIBCXXABI)
 #  include "support/runtime/exception_libcxxabi.ipp"
 #  include "support/runtime/exception_pointer_cxxabi.ipp"
