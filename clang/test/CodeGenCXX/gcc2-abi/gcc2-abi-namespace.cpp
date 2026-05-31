@@ -33,11 +33,11 @@ namespace A {
 // Anonymous namespace (verifies null deref fix)
 namespace {
   void anon_func() {}
-  // CHECK: define{{.*}} internal void @anon_func__{{[0-9]+}}_GLOBAL_.N.{{.*}}gcc2_abi_namespace.cpp{{[a-zA-Z0-9]+}}v()
+  // CHECK: define{{.*}} internal void @anon_func__22_GLOBAL_.N.func__3Foovv()
 
   namespace std {
     void anon_std_func() {}
-    // CHECK: define{{.*}} internal void @anon_std_func__Q2{{[0-9]+}}_GLOBAL_.N.{{.*}}gcc2_abi_namespace.cpp{{[a-zA-Z0-9]+}}3stdv()
+    // CHECK: define{{.*}} internal void @anon_std_func__Q222_GLOBAL_.N.func__3Foov3stdv()
   }
 }
 

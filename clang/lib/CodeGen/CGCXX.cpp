@@ -288,8 +288,14 @@ llvm::FunctionCallee CodeGenModule::getAddrAndTypeOfCXXStructor(
     // MS ABI.
     if (getTarget().getCXXABI().isMicrosoft() &&
         GD.getDtorType() == Dtor_Complete &&
-        MD->getParent()->getNumVBases() == 0)
+        MD->getParent()->getNumVBases() == 0) {
       GD = GD.getWithDtorType(Dtor_Base);
+    }
+    // Natively map all destructor symbols to Dtor_Base under GCC2 C++ ABI
+    // to ensure they resolve cleanly to the single GCC2 '_._' symbol.
+    else if (TargetCXXABI(getContext().getCXXABIKind()).isGCC2()) {
+      GD = GD.getWithDtorType(Dtor_Base);
+    }
   }
 
   if (!FnType) {

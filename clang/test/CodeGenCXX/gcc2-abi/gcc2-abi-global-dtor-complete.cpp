@@ -10,5 +10,5 @@ struct Derived : public virtual Base {
 
 Derived g_derived;
 
-// CHECK: define internal void @__dtor_g_derived()
+// CHECK: define internal void @_I.__dtor_g_derived()
 // CHECK: call ptr @_._7Derived(ptr @g_derived, i32 2)

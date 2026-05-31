@@ -62,7 +62,7 @@ static CharUnits getBaseOffset(const ASTContext &Context, const CXXRecordDecl *D
     const CXXBasePathElement &Element = Path[I];
     const CXXRecordDecl *Parent = Element.Class;
     const CXXRecordDecl *Child = Element.Base->getType()->getAsCXXRecordDecl();
-    
+
     if (Element.Base->isVirtual()) {
       const ASTRecordLayout &MostDerivedLayout = Context.getASTRecordLayout(MostDerived);
       Offset = MostDerivedLayout.getVBaseClassOffset(Child);
@@ -77,24 +77,24 @@ static CharUnits getBaseOffset(const ASTContext &Context, const CXXRecordDecl *D
 static bool isIgnoredStdNamespace(const DeclContext *DC) {
   while (DC && isa<LinkageSpecDecl>(DC))
     DC = DC->getParent();
-    
+
   const auto *ND = dyn_cast_or_null<NamespaceDecl>(DC);
   if (!ND) {
     return false;
   }
-  
+
   if (!(ND->isStdNamespace() || (ND->getIdentifier() && ND->getIdentifier()->isStr("std")))) {
     return false;
   }
-  
+
   const DeclContext *Parent = ND->getParent();
   while (Parent && isa<LinkageSpecDecl>(Parent))
     Parent = Parent->getParent();
-    
+
   if (Parent->isTranslationUnit()) {
     return true;
   }
-  
+
   return isIgnoredStdNamespace(Parent);
 }
 
@@ -113,7 +113,44 @@ static bool isEffectivelyTranslationUnit(const DeclContext *DC) {
   return true;
 }
 
+class GCC2MangleContextImpl;
+
+class GCC2NameMangler {
+  GCC2MangleContextImpl &Context;
+  bool Failed = false;
+  bool NumericOutputNeedBar = false;
+
+public:
+  GCC2NameMangler(GCC2MangleContextImpl &Context)
+      : Context(Context) {}
+
+  bool hasFailed() const { return Failed; }
+
+  // Speculative runs
+  void mangleCXXName(GlobalDecl GD, raw_ostream &Out);
+  void mangleThunk(const CXXMethodDecl *MD, const ThunkInfo &Thunk, bool ElideOverrideInfo, raw_ostream &Out);
+  void mangleCXXDtorThunk(const CXXDestructorDecl *DD, CXXDtorType Type,
+                          const ThunkInfo &Thunk, bool ElideOverrideInfo, raw_ostream &Out);
+  void mangleCXXVTable(const CXXRecordDecl *RD, raw_ostream &Out);
+  void mangleCXXRTTI(QualType T, raw_ostream &Out);
+  void mangleCXXRTTIName(QualType T, raw_ostream &Out, bool NormalizeIntegers = false);
+
+  // Helpers (formerly private in GCC2MangleContextImpl)
+  void mangleType(QualType T, raw_ostream &Out, bool IsTopLevelParm = false);
+  void manglePrefix(const DeclContext *DC, raw_ostream &Out);
+  void mangleParameterList(ArrayRef<const ParmVarDecl *> Parameters, raw_ostream &Out);
+  void mangleTemplateParameterList(const TemplateParameterList *Params, raw_ostream &Out);
+  void mangleTemplateArgs(const TemplateParameterList *Params,
+                          const TemplateArgumentList &TemplateArgs,
+                          raw_ostream &Out);
+
+private:
+  bool isBackReferenceableType(QualType T);
+  ASTContext &getASTContext() const;
+};
+
 class GCC2MangleContextImpl : public GCC2MangleContext {
+  friend class GCC2NameMangler;
   std::unique_ptr<ItaniumMangleContext> Fallback;
   llvm::DenseMap<const NamedDecl *, unsigned> Uniquifier;
   unsigned TempCounter = 0;
@@ -123,31 +160,61 @@ class GCC2MangleContextImpl : public GCC2MangleContext {
 
   mutable std::string AnonymousNamespaceName;
 
-  static std::string getFirstExternalLinkageDeclName(ASTContext &Context) {
-    for (const Decl *D : Context.getTranslationUnitDecl()->decls()) {
+  static const NamedDecl *getFirstExternalLinkageDecl(const DeclContext *DC) {
+    for (const Decl *D : DC->decls()) {
       if (D->isImplicit())
         continue;
-      
-      if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
-        if (FD->isThisDeclarationADefinition() && FD->hasExternalFormalLinkage()) {
-          IdentifierInfo *II = FD->getIdentifier();
-          if (II && !II->getName().empty()) {
-            return II->getName().str();
+
+      if (const auto *LSD = dyn_cast<LinkageSpecDecl>(D)) {
+        if (const auto *ND = getFirstExternalLinkageDecl(LSD)) {
+          return ND;
+        }
+        continue;
+      }
+
+      if (const auto *ND = dyn_cast<NamespaceDecl>(D)) {
+        if (!ND->isAnonymousNamespace()) {
+          if (const auto *InnerND = getFirstExternalLinkageDecl(ND)) {
+            return InnerND;
           }
         }
+        continue;
       }
-      
+
+      if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
+        if (FD->isThisDeclarationADefinition() && FD->hasExternalFormalLinkage() &&
+            FD->getDeclName().isIdentifier()) {
+          return FD;
+        }
+      }
+
       if (const auto *VD = dyn_cast<VarDecl>(D)) {
         if (VD->isThisDeclarationADefinition() != VarDecl::DeclarationOnly &&
-            VD->hasExternalFormalLinkage()) {
-          IdentifierInfo *II = VD->getIdentifier();
-          if (II && !II->getName().empty()) {
-            return II->getName().str();
-          }
+            VD->hasExternalFormalLinkage() &&
+            VD->getDeclName().isIdentifier()) {
+          return VD;
         }
       }
     }
-    return "";
+    return nullptr;
+  }
+
+  std::string getFirstExternalLinkageDeclName(ASTContext &Context) {
+    const NamedDecl *ND = getFirstExternalLinkageDecl(Context.getTranslationUnitDecl());
+    if (!ND)
+      return "";
+
+    IdentifierInfo *II = ND->getIdentifier();
+    if (!II || II->getName().empty())
+      return "";
+
+    if (shouldMangleCXXName(ND)) {
+      SmallString<256> Buffer;
+      llvm::raw_svector_ostream Out(Buffer);
+      mangleCXXName(GlobalDecl(cast<ValueDecl>(ND)), Out);
+      return std::string(Out.str());
+    }
+    return II->getName().str();
   }
 
   void initAnonymousNamespaceName(ASTContext &Context) {
@@ -243,71 +310,79 @@ public:
                           raw_ostream &Out) override;
   void mangleReferenceTemporary(const VarDecl *D, unsigned ManglingNumber,
                                 raw_ostream &Out) override {
+    Out << "_I.";
     Fallback->mangleReferenceTemporary(D, ManglingNumber, Out);
   }
   std::string getLambdaString(const CXXRecordDecl *Lambda) override {
-    return Fallback->getLambdaString(Lambda);
+    return "_I." + Fallback->getLambdaString(Lambda);
   }
   void mangleCXXVTable(const CXXRecordDecl *RD, raw_ostream &Out) override;
   void mangleCXXVTT(const CXXRecordDecl *RD, raw_ostream &Out) override {
+    Out << "_I.";
     Fallback->mangleCXXVTT(RD, Out);
   }
   void mangleCXXCtorVTable(const CXXRecordDecl *RD, int64_t Offset,
                            const CXXRecordDecl *Type, raw_ostream &Out) override {
+    Out << "_I.";
     Fallback->mangleCXXCtorVTable(RD, Offset, Type, Out);
   }
   void mangleCXXRTTI(QualType T, raw_ostream &Out) override;
   void mangleCXXRTTIName(QualType T, raw_ostream &Out,
                          bool NormalizeIntegers) override;
   void mangleCanonicalTypeName(QualType T, raw_ostream &Out,
-                               bool NormalizeIntegers) override {
-    mangleType(T, Out);
-  }
+                               bool NormalizeIntegers) override;
 
   void mangleCXXCtorComdat(const CXXConstructorDecl *D, raw_ostream &Out) override {
+    Out << "_I.";
     Fallback->mangleCXXCtorComdat(D, Out);
   }
   void mangleCXXDtorComdat(const CXXDestructorDecl *D, raw_ostream &Out) override {
+    Out << "_I.";
     Fallback->mangleCXXDtorComdat(D, Out);
   }
   void mangleStaticGuardVariable(const VarDecl *D, raw_ostream &Out) override;
   void mangleDynamicInitializer(const VarDecl *D, raw_ostream &Out) override {
+    Out << "_I.";
     Fallback->mangleDynamicInitializer(D, Out);
   }
   void mangleDynamicAtExitDestructor(const VarDecl *D, raw_ostream &Out) override {
-    Out << "__dtor_";
-    if (D->getDeclContext()->isTranslationUnit()) {
-      Out << D->getName();
-    } else {
-      mangleCXXName(D, Out);
-    }
+    Out << "_I.";
+    Fallback->mangleDynamicAtExitDestructor(D, Out);
   }
   void mangleDynamicStermFinalizer(const VarDecl *D, raw_ostream &Out) override {
+    Out << "_I.";
     Fallback->mangleDynamicStermFinalizer(D, Out);
   }
   void mangleSEHFilterExpression(GlobalDecl EnclosingDecl,
                                  raw_ostream &Out) override {
+    Out << "_I.";
     Fallback->mangleSEHFilterExpression(EnclosingDecl, Out);
   }
   void mangleSEHFinallyBlock(GlobalDecl EnclosingDecl,
                              raw_ostream &Out) override {
+    Out << "_I.";
     Fallback->mangleSEHFinallyBlock(EnclosingDecl, Out);
   }
   void mangleItaniumThreadLocalInit(const VarDecl *D, raw_ostream &Out) override {
+    Out << "_I.";
     Fallback->mangleItaniumThreadLocalInit(D, Out);
   }
   void mangleItaniumThreadLocalWrapper(const VarDecl *D, raw_ostream &Out) override {
+    Out << "_I.";
     Fallback->mangleItaniumThreadLocalWrapper(D, Out);
   }
 
   void mangleStringLiteral(const StringLiteral *SL, raw_ostream &Out) override {
+    Out << "_I.";
     Fallback->mangleStringLiteral(SL, Out);
   }
   void mangleLambdaSig(const CXXRecordDecl *Lambda, raw_ostream &Out) override {
+    Out << "_I.";
     Fallback->mangleLambdaSig(Lambda, Out);
   }
 
   void mangleModuleInitializer(const Module *Module, raw_ostream &Out) override {
+    Out << "_I.";
     Fallback->mangleModuleInitializer(Module, Out);
   }
 
@@ -317,16 +392,11 @@ public:
 
 private:
   bool isBackReferenceableType(QualType T);
-  void mangleParameterList(ArrayRef<const ParmVarDecl *> Parameters, raw_ostream &Out);
   void mangleType(QualType T, raw_ostream &Out, bool IsTopLevelParm = false);
-  void manglePrefix(const DeclContext *DC, raw_ostream &Out);
-  void mangleTemplateParameterList(const TemplateParameterList *Params, raw_ostream &Out);
-  void mangleTemplateArgs(const TemplateParameterList *Params,
-                          const TemplateArgumentList &TemplateArgs,
-                          raw_ostream &Out);
 };
 
-void GCC2MangleContextImpl::mangleTemplateParameterList(const TemplateParameterList *Params, raw_ostream &Out) {
+void GCC2NameMangler::mangleTemplateParameterList(const TemplateParameterList *Params, raw_ostream &Out) {
+  if (Failed) return;
   Out << Params->size();
   for (const NamedDecl *Param : *Params) {
     if (isa<TemplateTypeParmDecl>(Param)) {
@@ -340,9 +410,10 @@ void GCC2MangleContextImpl::mangleTemplateParameterList(const TemplateParameterL
   }
 }
 
-void GCC2MangleContextImpl::mangleTemplateArgs(const TemplateParameterList *Params,
+void GCC2NameMangler::mangleTemplateArgs(const TemplateParameterList *Params,
                                                const TemplateArgumentList &TemplateArgs,
                                                raw_ostream &Out) {
+  if (Failed) return;
   Out << TemplateArgs.size();
   for (unsigned ArgI = 0; ArgI < TemplateArgs.size(); ++ArgI) {
     const TemplateArgument &Arg = TemplateArgs[ArgI];
@@ -415,10 +486,10 @@ void GCC2MangleContextImpl::mangleTemplateArgs(const TemplateParameterList *Para
       }
     } else if (Arg.getKind() == TemplateArgument::Declaration) {
       if (Params && ArgI < Params->size()) {
-        if (const auto *NTTP = dyn_cast<NonTypeTemplateParmDecl>(Params->getParam(ArgI))) {
+        if (isa<NonTypeTemplateParmDecl>(Params->getParam(ArgI))) {
           std::string TypeMangled;
           llvm::raw_string_ostream TypeOut(TypeMangled);
-          mangleType(NTTP->getType(), TypeOut);
+          mangleType(Arg.getParamTypeForDecl(), TypeOut);
           Out << TypeMangled;
           if (!TypeMangled.empty() && TypeMangled.back() >= '0' && TypeMangled.back() <= '9') {
             NumericOutputNeedBar = true;
@@ -500,11 +571,26 @@ void GCC2MangleContextImpl::mangleTemplateArgs(const TemplateParameterList *Para
         else
           NumericOutputNeedBar = false;
       }
+    } else {
+      Failed = true;
+      return;
     }
   }
 }
 
-void GCC2MangleContextImpl::manglePrefix(const DeclContext *DC, raw_ostream &Out) {
+void GCC2NameMangler::manglePrefix(const DeclContext *DC, raw_ostream &Out) {
+  if (Failed) return;
+
+  // Fall back to Itanium for any symbols nested inside a lambda closure
+  for (const DeclContext *C = DC; C && !C->isTranslationUnit(); C = C->getParent()) {
+    if (const auto *RD = dyn_cast<CXXRecordDecl>(C)) {
+      if (RD->isLambda()) {
+        Failed = true;
+        return;
+      }
+    }
+  }
+
   if (DC->isTranslationUnit())
     return;
 
@@ -558,12 +644,19 @@ void GCC2MangleContextImpl::manglePrefix(const DeclContext *DC, raw_ostream &Out
       // Enclosing function context: recursively mangle and append uniquifier
       std::string Mangled;
       llvm::raw_string_ostream MangledOut(Mangled);
-      mangleCXXName(GlobalDecl(FD), MangledOut);
-      
+      GlobalDecl GD;
+      if (const auto *CD = dyn_cast<CXXConstructorDecl>(FD))
+        GD = GlobalDecl(CD, Ctor_Complete);
+      else if (const auto *DD = dyn_cast<CXXDestructorDecl>(FD))
+        GD = GlobalDecl(DD, Dtor_Complete);
+      else
+        GD = GlobalDecl(FD);
+      mangleCXXName(GD, MangledOut);
+
       unsigned UniquifierVal = 0;
       if (!Contexts.empty()) {
         if (const auto *TD = dyn_cast<TagDecl>(Contexts[0])) {
-          UniquifierVal = getLocalTagUniquifier(TD);
+          UniquifierVal = Context.getLocalTagUniquifier(TD);
         }
       }
       MangledOut << "." << UniquifierVal;
@@ -594,10 +687,10 @@ void GCC2MangleContextImpl::manglePrefix(const DeclContext *DC, raw_ostream &Out
     if (const auto *NS = dyn_cast<NamespaceDecl>(*I)) {
       if (NS->isAnonymousNamespace()) {
         if (NumericOutputNeedBar) { Out << "_"; NumericOutputNeedBar = false; }
-        if (AnonymousNamespaceName.empty()) {
-          initAnonymousNamespaceName(getASTContext());
+        if (Context.AnonymousNamespaceName.empty()) {
+          Context.initAnonymousNamespaceName(getASTContext());
         }
-        Out << AnonymousNamespaceName.size() << AnonymousNamespaceName;
+        Out << Context.AnonymousNamespaceName.size() << Context.AnonymousNamespaceName;
         continue;
       }
     }
@@ -656,8 +749,17 @@ static QualType getGCC2CanonicalType(ASTContext &Context, QualType T) {
   return T.getCanonicalType();
 }
 
-void GCC2MangleContextImpl::mangleParameterList(ArrayRef<const ParmVarDecl *> Parameters,
+bool GCC2NameMangler::isBackReferenceableType(QualType T) {
+  return Context.isBackReferenceableType(T);
+}
+
+ASTContext &GCC2NameMangler::getASTContext() const {
+  return Context.getASTContext();
+}
+
+void GCC2NameMangler::mangleParameterList(ArrayRef<const ParmVarDecl *> Parameters,
                                                 raw_ostream &Out) {
+  if (Failed) return;
   SmallVector<QualType, 8> TypeVec;
 
   auto pushType = [&](QualType T) {
@@ -761,7 +863,8 @@ void GCC2MangleContextImpl::mangleParameterList(ArrayRef<const ParmVarDecl *> Pa
   }
 }
 
-void GCC2MangleContextImpl::mangleType(QualType T, raw_ostream &Out, bool IsTopLevelParm) {
+void GCC2NameMangler::mangleType(QualType T, raw_ostream &Out, bool IsTopLevelParm) {
+  if (Failed) return;
   T = T.getCanonicalType();
 
   QualType UnqualT = T.getLocalUnqualifiedType();
@@ -791,6 +894,10 @@ void GCC2MangleContextImpl::mangleType(QualType T, raw_ostream &Out, bool IsTopL
     Out << "u";
 
   if (const auto *RT = UnqualT->getAs<ReferenceType>()) {
+    if (isa<RValueReferenceType>(RT)) {
+      Failed = true;
+      return;
+    }
     Out << "R";
     mangleType(RT->getPointeeType(), Out);
     return;
@@ -806,13 +913,25 @@ void GCC2MangleContextImpl::mangleType(QualType T, raw_ostream &Out, bool IsTopL
     QualType Pointee = MPT->getPointeeType();
     if (MPT->isMemberDataPointer()) {
       Out << "O";
-      manglePrefix(RD, Out);
+      if (RD) {
+        manglePrefix(RD, Out);
+      } else {
+        mangleType(QualType(MPT->getQualifier().getAsType(), 0), Out);
+      }
       Out << "_";
       mangleType(Pointee, Out);
     } else {
       Out << "M";
-      manglePrefix(RD, Out);
+      if (RD) {
+        manglePrefix(RD, Out);
+      } else {
+        mangleType(QualType(MPT->getQualifier().getAsType(), 0), Out);
+      }
       const auto *FPT = Pointee->castAs<FunctionProtoType>();
+      if (FPT->getRefQualifier() != RQ_None) {
+        Failed = true;
+        return;
+      }
       if (FPT->getMethodQuals().hasConst())
         Out << "C";
       if (FPT->getMethodQuals().hasVolatile())
@@ -823,7 +942,11 @@ void GCC2MangleContextImpl::mangleType(QualType T, raw_ostream &Out, bool IsTopL
         Out << "C";
       if (FPT->getMethodQuals().hasVolatile())
         Out << "V";
-      manglePrefix(RD, Out);
+      if (RD) {
+        manglePrefix(RD, Out);
+      } else {
+        mangleType(QualType(MPT->getQualifier().getAsType(), 0), Out);
+      }
       for (const auto &ParamTy : FPT->param_types())
         mangleType(ParamTy, Out);
       Out << "_";
@@ -855,13 +978,23 @@ void GCC2MangleContextImpl::mangleType(QualType T, raw_ostream &Out, bool IsTopL
     case BuiltinType::Float: Out << "f"; break;
     case BuiltinType::Double: Out << "d"; break;
     case BuiltinType::LongDouble: Out << "r"; break;
-    default: Fallback->mangleCanonicalTypeName(UnqualT, Out); break;
+    default:
+      Failed = true;
+      break;
     }
     break;
   }
   case Type::Record:
   case Type::Enum: {
     const TagDecl *TD = cast<TagType>(Ty)->getDecl();
+    // Fall back to Itanium for anonymous enums and structs. Although GCC 2.95
+    // supported using anonymous types as template arguments as an extension
+    // (mangling them with sequential names like "._0", "._1"), this sequential
+    // scheme is highly compiler-dependent and too fragile to emulate in Clang.
+    if (TD->getDeclName().isEmpty()) {
+      Failed = true;
+      return;
+    }
     if (IsTopLevelParm && Ty->isRecordType())
       Out << "G";
     manglePrefix(TD, Out);
@@ -937,12 +1070,13 @@ void GCC2MangleContextImpl::mangleType(QualType T, raw_ostream &Out, bool IsTopL
     break;
   }
   default:
-    Fallback->mangleCanonicalTypeName(UnqualT, Out);
+    Failed = true;
     break;
   }
 }
 
-void GCC2MangleContextImpl::mangleCXXName(GlobalDecl GD, raw_ostream &Out) {
+void GCC2NameMangler::mangleCXXName(GlobalDecl GD, raw_ostream &Out) {
+  if (Failed) return;
   NumericOutputNeedBar = false;
   const NamedDecl *D = cast<NamedDecl>(GD.getDecl());
 
@@ -956,12 +1090,25 @@ void GCC2MangleContextImpl::mangleCXXName(GlobalDecl GD, raw_ostream &Out) {
   }
 
   if (const auto *DD = dyn_cast<CXXDestructorDecl>(D)) {
+    // Safety Fallback: Under the GCC2 ABI, only Dtor_Base (D2) should ever
+    // be natively mangled. Any other destructor variant (D1/D0) is redirected
+    // to Itanium fallback to prevent name loop collisions.
+    if (GD.getDtorType() != Dtor_Base) {
+      Failed = true;
+      return;
+    }
     Out << "_._";
     manglePrefix(DD->getParent(), Out);
     return;
   }
 
   if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
+    if (const auto *MD = dyn_cast<CXXMethodDecl>(FD)) {
+      if (MD->getRefQualifier() != RQ_None) {
+        Failed = true;
+        return;
+      }
+    }
     if (FD->getDeclName().getNameKind() == DeclarationName::CXXOperatorName) {
       switch (FD->getDeclName().getCXXOverloadedOperator()) {
       case OO_EqualEqual: Out << "__eq"; break;
@@ -1031,12 +1178,18 @@ void GCC2MangleContextImpl::mangleCXXName(GlobalDecl GD, raw_ostream &Out) {
         }
         Out << "__vd";
         break;
-      default: Fallback->mangleCXXName(GD, Out); return;
+      default:
+        Failed = true;
+        return;
       }
     } else if (FD->getDeclName().getNameKind() == DeclarationName::CXXConversionFunctionName) {
       Out << "__op";
       mangleType(FD->getReturnType(), Out);
     } else {
+      if (!FD->getDeclName().isIdentifier()) {
+        Failed = true;
+        return;
+      }
       Out << FD->getName();
     }
     if (FunctionTemplateDecl *PrimaryTemplate = FD->getPrimaryTemplate()) {
@@ -1097,22 +1250,59 @@ void GCC2MangleContextImpl::mangleCXXName(GlobalDecl GD, raw_ostream &Out) {
   }
 
   if (const auto *VD = dyn_cast<VarDecl>(D)) {
+    if (isa<VarTemplateSpecializationDecl>(VD)) {
+      Failed = true;
+      return;
+    }
     const DeclContext *DC = VD->getDeclContext();
     if ((DC->isRecord() || DC->isNamespace()) && !isEffectivelyTranslationUnit(DC)) {
       Out << "_";
       manglePrefix(DC, Out);
+      if (!VD->getDeclName().isIdentifier()) {
+        Failed = true;
+        return;
+      }
       Out << "." << VD->getName();
       return;
     }
   }
 
+  if (!D->getDeclName().isIdentifier()) {
+    Failed = true;
+    return;
+  }
   Out << D->getName();
 }
 
-void GCC2MangleContextImpl::mangleThunk(const CXXMethodDecl *MD,
-                                        const ThunkInfo &Thunk,
-                                        bool ElideOverrideInfo,
-                                        raw_ostream &Out) {
+
+void GCC2MangleContextImpl::mangleCXXName(GlobalDecl GD, raw_ostream &Out) {
+  std::string Buffer;
+  llvm::raw_string_ostream BufferOut(Buffer);
+
+  GCC2NameMangler Mangler(*this);
+  Mangler.mangleCXXName(GD, BufferOut);
+
+  if (!Mangler.hasFailed()) {
+    Out << Buffer;
+  } else {
+    Out << "_I.";
+    // If a constructor falls back to Itanium (due to packs, rvalue references,
+    // etc.), we must force it to mangle as a Complete constructor (C1) since the
+    // GCC2 ABI layer only emits a single complete constructor definition.
+    // Forcing it to C1 ensures perfect linkage.
+    const Decl *D = GD.getDecl();
+    if (const auto *CD = dyn_cast<CXXConstructorDecl>(D)) {
+      GD = GlobalDecl(CD, Ctor_Complete);
+    }
+    Fallback->mangleCXXName(GD, Out);
+  }
+}
+
+void GCC2NameMangler::mangleThunk(const CXXMethodDecl *MD,
+                                      const ThunkInfo &Thunk,
+                                      bool ElideOverrideInfo,
+                                      raw_ostream &Out) {
+  if (Failed) return;
   Out << "__thunk_";
   if (Thunk.This.NonVirtual > 0)
     Out << "n" << Thunk.This.NonVirtual;
@@ -1122,39 +1312,143 @@ void GCC2MangleContextImpl::mangleThunk(const CXXMethodDecl *MD,
   mangleCXXName(MD, Out);
 }
 
-void GCC2MangleContextImpl::mangleCXXDtorThunk(const CXXDestructorDecl *DD,
-                                               CXXDtorType Type,
-                                               const ThunkInfo &Thunk,
-                                               bool ElideOverrideInfo,
-                                               raw_ostream &Out) {
+void GCC2MangleContextImpl::mangleThunk(const CXXMethodDecl *MD,
+                                        const ThunkInfo &Thunk,
+                                        bool ElideOverrideInfo,
+                                        raw_ostream &Out) {
+  std::string Buffer;
+  llvm::raw_string_ostream BufferOut(Buffer);
+
+  GCC2NameMangler Mangler(*this);
+  Mangler.mangleThunk(MD, Thunk, ElideOverrideInfo, BufferOut);
+
+  if (!Mangler.hasFailed()) {
+    Out << Buffer;
+  } else {
+    Out << "_I.";
+    Fallback->mangleThunk(MD, Thunk, ElideOverrideInfo, Out);
+  }
+}
+
+void GCC2NameMangler::mangleCXXDtorThunk(const CXXDestructorDecl *DD,
+                                             CXXDtorType Type,
+                                             const ThunkInfo &Thunk,
+                                             bool ElideOverrideInfo,
+                                             raw_ostream &Out) {
+  if (Failed) return;
   Out << "__thunk_";
   if (Thunk.This.NonVirtual > 0)
     Out << "n" << Thunk.This.NonVirtual;
   else
     Out << -Thunk.This.NonVirtual;
   Out << "_";
-  mangleCXXName(GlobalDecl(DD, Dtor_Complete), Out);
+  mangleCXXName(GlobalDecl(DD, Dtor_Base), Out);
 }
 
-void GCC2MangleContextImpl::mangleCXXVTable(const CXXRecordDecl *RD,
-                                            raw_ostream &Out) {
+void GCC2MangleContextImpl::mangleCXXDtorThunk(const CXXDestructorDecl *DD,
+                                               CXXDtorType Type,
+                                               const ThunkInfo &Thunk,
+                                               bool ElideOverrideInfo,
+                                               raw_ostream &Out) {
+  std::string Buffer;
+  llvm::raw_string_ostream BufferOut(Buffer);
+
+  GCC2NameMangler Mangler(*this);
+  Mangler.mangleCXXDtorThunk(DD, Type, Thunk, ElideOverrideInfo, BufferOut);
+
+  if (!Mangler.hasFailed()) {
+    Out << Buffer;
+  } else {
+    Out << "_I.";
+    Fallback->mangleCXXDtorThunk(DD, Type, Thunk, ElideOverrideInfo, Out);
+  }
+}
+
+void GCC2NameMangler::mangleCXXVTable(const CXXRecordDecl *RD, raw_ostream &Out) {
+  if (Failed) return;
   NumericOutputNeedBar = false;
   Out << "__vt_";
   manglePrefix(RD, Out);
 }
 
-void GCC2MangleContextImpl::mangleCXXRTTI(QualType T, raw_ostream &Out) {
+void GCC2MangleContextImpl::mangleCXXVTable(const CXXRecordDecl *RD,
+                                            raw_ostream &Out) {
+  std::string Buffer;
+  llvm::raw_string_ostream BufferOut(Buffer);
+
+  GCC2NameMangler Mangler(*this);
+  Mangler.mangleCXXVTable(RD, BufferOut);
+
+  if (!Mangler.hasFailed()) {
+    Out << Buffer;
+  } else {
+    Out << "_I.";
+    Fallback->mangleCXXVTable(RD, Out);
+  }
+}
+
+void GCC2NameMangler::mangleCXXRTTI(QualType T, raw_ostream &Out) {
+  if (Failed) return;
   NumericOutputNeedBar = false;
   Out << "__tf";
   mangleType(T, Out);
 }
 
-void GCC2MangleContextImpl::mangleCXXRTTIName(QualType T, raw_ostream &Out,
-                                              bool NormalizeIntegers) {
+void GCC2MangleContextImpl::mangleCXXRTTI(QualType T, raw_ostream &Out) {
+  std::string Buffer;
+  llvm::raw_string_ostream BufferOut(Buffer);
+
+  GCC2NameMangler Mangler(*this);
+  Mangler.mangleCXXRTTI(T, BufferOut);
+
+  if (!Mangler.hasFailed()) {
+    Out << Buffer;
+  } else {
+    Out << "_I.";
+    Fallback->mangleCXXRTTI(T, Out);
+  }
+}
+
+void GCC2NameMangler::mangleCXXRTTIName(QualType T, raw_ostream &Out,
+                                            bool NormalizeIntegers) {
+  if (Failed) return;
   NumericOutputNeedBar = false;
   Out << "__ti";
   mangleType(T, Out);
 }
+
+void GCC2MangleContextImpl::mangleCXXRTTIName(QualType T, raw_ostream &Out,
+                                              bool NormalizeIntegers) {
+  std::string Buffer;
+  llvm::raw_string_ostream BufferOut(Buffer);
+
+  GCC2NameMangler Mangler(*this);
+  Mangler.mangleCXXRTTIName(T, BufferOut, NormalizeIntegers);
+
+  if (!Mangler.hasFailed()) {
+    Out << Buffer;
+  } else {
+    Out << "_I.";
+    Fallback->mangleCXXRTTIName(T, Out, NormalizeIntegers);
+  }
+}
+
+void GCC2MangleContextImpl::mangleCanonicalTypeName(QualType T, raw_ostream &Out,
+                                                     bool NormalizeIntegers) {
+  std::string Buffer;
+  llvm::raw_string_ostream BufferOut(Buffer);
+
+  GCC2NameMangler Mangler(*this);
+  Mangler.mangleType(T, BufferOut);
+
+  if (!Mangler.hasFailed()) {
+    Out << Buffer;
+  } else {
+    Out << "_I.";
+    Fallback->mangleCanonicalTypeName(T, Out, NormalizeIntegers);
+  }
+}
+
 
 void GCC2MangleContextImpl::mangleStaticGuardVariable(const VarDecl *D,
                                                       raw_ostream &Out) {

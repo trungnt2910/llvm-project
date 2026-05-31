@@ -34,8 +34,8 @@ struct MemberCallInfo {
 
 static MemberCallInfo
 commonEmitCXXMemberOrOperatorCall(CodeGenFunction &CGF, GlobalDecl GD,
-                                  llvm::Value *This, llvm::Value *ImplicitParam,
-                                  QualType ImplicitParamTy, const CallExpr *CE,
+                                  llvm::Value *This, CallArgList &ImplicitArgs,
+                                  const CallExpr *CE,
                                   CallArgList &Args, CallArgList *RtlArgs) {
   auto *MD = cast<CXXMethodDecl>(GD.getDecl());
 
@@ -49,10 +49,8 @@ commonEmitCXXMemberOrOperatorCall(CodeGenFunction &CGF, GlobalDecl GD,
       CGF.CGM.getCXXABI().getThisArgumentTypeForMethod(GD);
   Args.add(RValue::get(This), CGF.getTypes().DeriveThisType(RD, MD));
 
-  // If there is an implicit parameter (e.g. VTT), emit it.
-  if (ImplicitParam) {
-    Args.add(RValue::get(ImplicitParam), ImplicitParamTy);
-  }
+  // If there are implicit parameters (e.g. VTT), emit them.
+  Args.addFrom(ImplicitArgs);
 
   const FunctionProtoType *FPT = MD->getType()->castAs<FunctionProtoType>();
   RequiredArgs required = RequiredArgs::forPrototypePlus(FPT, Args.size());
@@ -89,8 +87,12 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorCall(
     llvm::CallBase **CallOrInvoke) {
   const FunctionProtoType *FPT = MD->getType()->castAs<FunctionProtoType>();
   CallArgList Args;
+  CallArgList ImplicitArgs;
+  if (ImplicitParam) {
+    ImplicitArgs.add(RValue::get(ImplicitParam), ImplicitParamTy);
+  }
   MemberCallInfo CallInfo = commonEmitCXXMemberOrOperatorCall(
-      *this, MD, This, ImplicitParam, ImplicitParamTy, CE, Args, RtlArgs);
+      *this, MD, This, ImplicitArgs, CE, Args, RtlArgs);
   auto &FnInfo = CGM.getTypes().arrangeCXXMethodCall(
       Args, FPT, CallInfo.ReqArgs, CallInfo.PrefixSize);
   return EmitCall(FnInfo, Callee, ReturnValue, Args, CallOrInvoke,
@@ -101,6 +103,17 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorCall(
 RValue CodeGenFunction::EmitCXXDestructorCall(
     GlobalDecl Dtor, const CGCallee &Callee, llvm::Value *This, QualType ThisTy,
     llvm::Value *ImplicitParam, QualType ImplicitParamTy, const CallExpr *CE,
+    llvm::CallBase **CallOrInvoke) {
+  CallArgList ImplicitArgs;
+  if (ImplicitParam) {
+    ImplicitArgs.add(RValue::get(ImplicitParam), ImplicitParamTy);
+  }
+  return EmitCXXDestructorCall(Dtor, Callee, This, ThisTy, ImplicitArgs, CE, CallOrInvoke);
+}
+
+RValue CodeGenFunction::EmitCXXDestructorCall(
+    GlobalDecl Dtor, const CGCallee &Callee, llvm::Value *This, QualType ThisTy,
+    CallArgList &ImplicitArgs, const CallExpr *CE,
     llvm::CallBase **CallOrInvoke) {
   const CXXMethodDecl *DtorDecl = cast<CXXMethodDecl>(Dtor.getDecl());
 
@@ -117,8 +130,7 @@ RValue CodeGenFunction::EmitCXXDestructorCall(
   }
 
   CallArgList Args;
-  commonEmitCXXMemberOrOperatorCall(*this, Dtor, This, ImplicitParam,
-                                    ImplicitParamTy, CE, Args, nullptr);
+  commonEmitCXXMemberOrOperatorCall(*this, Dtor, This, ImplicitArgs, CE, Args, nullptr);
   return EmitCall(CGM.getTypes().arrangeCXXStructorDeclaration(Dtor), Callee,
                   ReturnValueSlot(), Args, CallOrInvoke,
                   CE && CE == MustTailCall,
@@ -294,10 +306,10 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorMemberCallExpr(
     assert(!RtlArgs);
     assert(ReturnValue.isNull() && "Constructor shouldn't have return value");
     CallArgList Args;
+    CallArgList ImplicitArgs;
     commonEmitCXXMemberOrOperatorCall(
         *this, {Ctor, Ctor_Complete}, This.getPointer(*this),
-        /*ImplicitParam=*/nullptr,
-        /*ImplicitParamTy=*/QualType(), CE, Args, nullptr);
+        ImplicitArgs, CE, Args, nullptr);
 
     EmitCXXConstructorCall(Ctor, Ctor_Complete, /*ForVirtualBase=*/false,
                            /*Delegating=*/false, This.getAddress(), Args,
@@ -392,9 +404,12 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorMemberCallExpr(
 
       QualType ThisTy =
           IsArrow ? Base->getType()->getPointeeType() : Base->getType();
+      CallArgList ImplicitArgs;
+      CGM.getCXXABI().addImplicitDestructorArgs(
+          *this, Dtor, Dtor_Complete, /*ForVirtualBase=*/false,
+          /*Delegating=*/false, ImplicitArgs);
       EmitCXXDestructorCall(GD, Callee, This.getPointer(*this), ThisTy,
-                            /*ImplicitParam=*/nullptr,
-                            /*ImplicitParamTy=*/QualType(), CE, CallOrInvoke);
+                            ImplicitArgs, CE, CallOrInvoke);
     }
     return RValue::get(nullptr);
   }

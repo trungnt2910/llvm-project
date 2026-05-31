@@ -348,10 +348,8 @@ public:
   Address adjustVTablePointerSource(CodeGenFunction &CGF, Address This,
                                     const CXXRecordDecl *RD) override {
     const ASTRecordLayout &Layout = getContext().getASTRecordLayout(RD);
-    CharUnits PtrWidth = getContext().toCharUnitsFromBits(
-        getContext().getTargetInfo().getPointerWidth(LangAS::Default));
     if (Layout.hasOwnVFPtr()) {
-      CharUnits VFPtrOffset = Layout.getNonVirtualSize() - PtrWidth;
+      CharUnits VFPtrOffset = Layout.getVFPtrOffset();
       if (!VFPtrOffset.isZero())
         This = CGF.Builder.CreateConstInBoundsByteGEP(
             This.withElementType(CGF.Int8Ty), VFPtrOffset, "vfptr");
@@ -408,10 +406,7 @@ public:
     }
 
     if (Base != RD) {
-      bool IsVirtual = isVirtuallyDerivedFromGCC2(RD, Base);
-      if (IsVirtual) {
-        This = convertAddressOfBaseClass(CGF, This, RD, Base);
-      }
+      This = convertAddressOfBaseClass(CGF, This, RD, Base);
     }
     return This;
   }
@@ -866,9 +861,38 @@ public:
         llvm::Value *PtrVal = CGF.Builder.CreateBitCast(Exn, CGF.ConvertType(CatchType));
         CGF.Builder.CreateStore(PtrVal, ParamAddr);
       } else {
-        CGF.EmitAggregateCopy(CGF.MakeAddrLValue(ParamAddr, CatchType),
-                              CGF.MakeAddrLValue(Address(Exn, Int8PtrTy, CGF.getPointerAlign()), CatchType),
-                              CatchType, AggValueSlot::DoesNotOverlap);
+        // Properly initialize non-trivial by-value catch parameters
+        if (CatchType->isRecordType()) {
+          auto catchRD = CatchType->getAsCXXRecordDecl();
+          CharUnits caughtExnAlignment = CGF.CGM.getClassPointerAlignment(catchRD);
+
+          const Expr *copyExpr = VD->getInit();
+          if (!copyExpr) {
+            LValue Dest = CGF.MakeAddrLValue(ParamAddr, CatchType);
+            LValue Src = CGF.MakeAddrLValue(Address(Exn, Int8PtrTy, caughtExnAlignment), CatchType);
+            CGF.EmitAggregateCopy(Dest, Src, CatchType, AggValueSlot::DoesNotOverlap);
+          } else {
+            Address adjustedExn(CGF.Builder.CreateBitCast(Exn, CGF.DefaultPtrTy),
+                                CGF.ConvertTypeForMem(CatchType), caughtExnAlignment);
+            CodeGenFunction::OpaqueValueMapping opaque(
+                CGF, OpaqueValueExpr::findInCopyConstruct(copyExpr),
+                CGF.MakeAddrLValue(adjustedExn, CatchType));
+            CGF.EHStack.pushTerminate();
+            CGF.EmitAggExpr(copyExpr,
+                            AggValueSlot::forAddr(ParamAddr, Qualifiers(),
+                                                  AggValueSlot::IsNotDestructed,
+                                                  AggValueSlot::DoesNotNeedGCBarriers,
+                                                  AggValueSlot::IsNotAliased,
+                                                  AggValueSlot::DoesNotOverlap));
+            CGF.EHStack.popTerminate();
+            opaque.pop();
+          }
+        } else {
+          // Primitive types caught by value (e.g. int)
+          LValue Dest = CGF.MakeAddrLValue(ParamAddr, CatchType);
+          LValue Src = CGF.MakeAddrLValue(Address(Exn, Int8PtrTy, CGF.getPointerAlign()), CatchType);
+          CGF.EmitAggregateCopy(Dest, Src, CatchType, AggValueSlot::DoesNotOverlap);
+        }
       }
       CGF.EmitAutoVarCleanups(var);
     }
@@ -2061,6 +2085,26 @@ public:
       CGF.Builder.CreateCall(FTy, Fn, {This.emitRawPointer(CGF), InChrg});
     }
   }
+  AddedStructorArgCounts addImplicitDestructorArgs(CodeGenFunction &CGF,
+                                                 const CXXDestructorDecl *DD,
+                                                 CXXDtorType Type, bool ForVirtualBase,
+                                                 bool Delegating, CallArgList &Args) override {
+    llvm::Value *InChrg = getCXXDestructorImplicitParam(CGF, DD, Type, ForVirtualBase, Delegating);
+    Args.add(RValue::get(InChrg), getContext().IntTy);
+
+    const CXXRecordDecl *RD = DD->getParent();
+    if (RD && RD->getNumVBases() != 0 && hasPolymorphicVBases(RD)) {
+      llvm::Value *VListVal;
+      if (getGCC2VListAlloca(CGF).isValid()) {
+        VListVal = CGF.Builder.CreateLoad(getGCC2VListAlloca(CGF), "vlist.active");
+      } else {
+        VListVal = llvm::ConstantPointerNull::get(CGM.Int8PtrTy);
+      }
+      Args.add(RValue::get(VListVal), getContext().VoidPtrTy);
+      return AddedStructorArgCounts::prefix(2);
+    }
+    return AddedStructorArgCounts::prefix(1);
+  }
   void adjustCallArgsForDestructorThunk(CodeGenFunction &CGF, GlobalDecl GD,
                                         CallArgList &CallArgs) override {
     auto *DD = cast<CXXDestructorDecl>(GD.getDecl());
@@ -2371,7 +2415,8 @@ public:
 
   size_t getSrcArgforCopyCtor(const CXXConstructorDecl *CD,
                               FunctionArgList &Args) const override {
-    return 0;
+    assert(!Args.empty() && "expected the arglist to not be empty!");
+    return Args.size() - 1;
   }
   StringRef GetPureVirtualCallName() override {
     return "__pure_virtual";

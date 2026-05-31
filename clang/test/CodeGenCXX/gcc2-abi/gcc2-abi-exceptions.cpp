@@ -8,8 +8,8 @@ public:
 
 // 1. Verify global destructors use atexit instead of __cxa_atexit
 Derived global_derived;
-// CHECK: define internal void @__cxx_global_var_init()
-// CHECK: call i32 @atexit(ptr @__dtor_global_derived)
+// CHECK: define internal void @_I.__cxx_global_var_init()
+// CHECK: call i32 @atexit(ptr @_I.__dtor_global_derived)
 
 // 2. Verify exception specifications call __check_eh_spec instead of __cxa_call_unexpected
 void test_eh_spec() throw(Derived) {
@@ -31,7 +31,7 @@ void test_static_local() {
 
 // CHECK: [[INIT_CHECK]]:
 // CHECK: call {{.*}} @__7Derived{{.*}}
-// CHECK: call i32 @atexit(ptr @__dtor_static_d)
+// CHECK: call i32 @atexit(ptr @_I.__dtor__ZZ17test_static_localvE8static_d)
 // CHECK: store i32 1, ptr @__tmp_0, align 4
 
 // 4. Verify const reference catching for classes uses the unqualified RTTI function in EH tables
@@ -59,3 +59,25 @@ void test_rethrow() {
 // CHECK: invoke void @__uncatch_exception()
 // CHECK: invoke void @__throw()
 // CHECK: unreachable
+
+// 6. Verify that catching a non-trivially copyable class by-value generates the copy constructor call
+struct NonTrivial {
+  int val;
+  NonTrivial();
+  NonTrivial(const NonTrivial&);
+  ~NonTrivial();
+};
+
+void test_by_value_catch() {
+  try {
+    throw NonTrivial();
+  } catch (NonTrivial e) {
+  }
+}
+// CHECK-LABEL: define {{.*}} @test_by_value_catch__Fv(
+// CHECK: landingpad { ptr, i32 }
+// CHECK: [[HANDLER:%.*]] = call ptr @__start_cp_handler()
+// CHECK: invoke noundef ptr @__{{.*}}NonTrivial{{.*}}(ptr {{.*}}, ptr {{.*}})
+// CHECK: call ptr @_._10NonTrivial(ptr {{.*}}, i32 2)
+// CHECK: call void @__cp_pop_exception(ptr [[HANDLER]])
+

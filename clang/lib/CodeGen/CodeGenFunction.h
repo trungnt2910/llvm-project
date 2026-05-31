@@ -4750,6 +4750,10 @@ public:
                                llvm::Value *ImplicitParam,
                                QualType ImplicitParamTy, const CallExpr *E,
                                llvm::CallBase **CallOrInvoke = nullptr);
+  RValue EmitCXXDestructorCall(GlobalDecl Dtor, const CGCallee &Callee,
+                               llvm::Value *This, QualType ThisTy,
+                               CallArgList &ImplicitArgs, const CallExpr *E,
+                               llvm::CallBase **CallOrInvoke = nullptr);
   RValue EmitCXXMemberCallExpr(const CXXMemberCallExpr *E,
                                ReturnValueSlot ReturnValue,
                                llvm::CallBase **CallOrInvoke = nullptr);

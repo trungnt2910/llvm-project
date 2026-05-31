@@ -5619,8 +5619,11 @@ CodeGenModule::GetAddrOfFunction(GlobalDecl GD, llvm::Type *Ty, bool ForVTable,
   if (const auto *DD = dyn_cast<CXXDestructorDecl>(GD.getDecl())) {
     if (getTarget().getCXXABI().isMicrosoft() &&
         GD.getDtorType() == Dtor_Complete &&
-        DD->getParent()->getNumVBases() == 0)
+        DD->getParent()->getNumVBases() == 0) {
       GD = GlobalDecl(DD, Dtor_Base);
+    } else if (TargetCXXABI(getContext().getCXXABIKind()).isGCC2()) {
+      GD = GlobalDecl(DD, Dtor_Base);
+    }
   }
 
   StringRef MangledName = getMangledName(GD);

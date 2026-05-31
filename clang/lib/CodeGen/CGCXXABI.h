@@ -462,6 +462,14 @@ public:
                                 const CXXDestructorDecl *DD, CXXDtorType Type,
                                 bool ForVirtualBase, bool Delegating) = 0;
 
+  /// Add any ABI-specific implicit arguments needed to call a destructor.
+  virtual AddedStructorArgCounts
+  addImplicitDestructorArgs(CodeGenFunction &CGF, const CXXDestructorDecl *DD,
+                            CXXDtorType Type, bool ForVirtualBase,
+                            bool Delegating, CallArgList &Args) {
+    return AddedStructorArgCounts{};
+  }
+
   /// Emit the destructor call.
   virtual void EmitDestructorCall(CodeGenFunction &CGF,
                                   const CXXDestructorDecl *DD, CXXDtorType Type,
