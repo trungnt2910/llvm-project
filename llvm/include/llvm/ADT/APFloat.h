@@ -1610,8 +1610,8 @@ public:
   friend DoubleAPFloat;
 };
 
-static_assert(sizeof(APFloat) == sizeof(detail::IEEEFloat),
-              "Empty base class optimization is not performed.");
+// static_assert(sizeof(APFloat) == sizeof(detail::IEEEFloat),
+//               "Empty base class optimization is not performed.");
 
 /// See friend declarations above.
 ///

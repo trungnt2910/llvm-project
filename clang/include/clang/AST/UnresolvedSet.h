@@ -144,11 +144,22 @@ public:
 private:
   // These work because the only permitted subclass is UnresolvedSetImpl
 
+  template <typename T>
+  struct GetEmptyBaseOffset {
+    struct Empty {};
+    struct Derived : public Empty {
+      T member;
+    };
+    static constexpr size_t value = offsetof(Derived, member);
+  };
+
   DeclsTy &decls() {
-    return *reinterpret_cast<DeclsTy*>(this);
+    static constexpr size_t offset = GetEmptyBaseOffset<DeclsTy>::value;
+    return *reinterpret_cast<DeclsTy*>(reinterpret_cast<char*>(this) + offset);
   }
   const DeclsTy &decls() const {
-    return *reinterpret_cast<const DeclsTy*>(this);
+    static constexpr size_t offset = GetEmptyBaseOffset<DeclsTy>::value;
+    return *reinterpret_cast<const DeclsTy*>(reinterpret_cast<const char*>(this) + offset);
   }
 };
 

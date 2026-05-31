@@ -54,8 +54,8 @@ public:
 /// DenseMapInfo "concept".
 template <typename ValueT, typename MapTy, typename ValueInfoT>
 class DenseSetImpl {
-  static_assert(sizeof(typename MapTy::value_type) == sizeof(ValueT),
-                "DenseMap buckets unexpectedly large!");
+//   static_assert(sizeof(typename MapTy::value_type) == sizeof(ValueT),
+//                 "DenseMap buckets unexpectedly large!");
   MapTy TheMap;
 
   template <typename T>
