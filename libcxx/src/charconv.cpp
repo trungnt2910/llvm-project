@@ -6,8 +6,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <cctype>
 #include <charconv>
 #include <string.h>
+
+_LIBCPP_PUSH_MACROS
+#include <__undef_macros>
 
 #include "include/from_chars_floating_point.h"
 #include "include/to_chars_floating_point.h"
@@ -93,3 +97,5 @@ template __from_chars_result<double> __from_chars_floating_point(
 
 _LIBCPP_END_EXPLICIT_ABI_ANNOTATIONS
 _LIBCPP_END_NAMESPACE_STD
+
+_LIBCPP_POP_MACROS

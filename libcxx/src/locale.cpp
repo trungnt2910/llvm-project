@@ -920,6 +920,8 @@ const ctype<char>::mask* ctype<char>::classic_table() noexcept {
 #    else
   return const_cast<const ctype<char>::mask*>(__ctypec);
 #    endif
+#  elif defined(__HAIKU__)
+  return *__ctype_b_loc();
 #  else
   // Platform not supported: abort so the person doing the port knows what to
   // fix

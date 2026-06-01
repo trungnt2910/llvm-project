@@ -26,3 +26,75 @@
 #ifdef erase
 #  undef erase
 #endif
+
+#ifdef tolower
+#  undef tolower
+#endif
+
+#ifdef toupper
+#  undef toupper
+#endif
+
+#ifdef isascii
+#  undef isascii
+#endif
+
+#ifdef toascii
+#  undef toascii
+#endif
+
+#ifdef _tolower
+#  undef _tolower
+#endif
+
+#ifdef _toupper
+#  undef _toupper
+#endif
+
+#ifdef isalnum
+#  undef isalnum
+#endif
+
+#ifdef isalpha
+#  undef isalpha
+#endif
+
+#ifdef isblank
+#  undef isblank
+#endif
+
+#ifdef iscntrl
+#  undef iscntrl
+#endif
+
+#ifdef isdigit
+#  undef isdigit
+#endif
+
+#ifdef islower
+#  undef islower
+#endif
+
+#ifdef isgraph
+#  undef isgraph
+#endif
+
+#ifdef isprint
+#  undef isprint
+#endif
+
+#ifdef ispunct
+#  undef ispunct
+#endif
+
+#ifdef isspace
+#  undef isspace
+#endif
+
+#ifdef isupper
+#  undef isupper
+#endif
+
+#ifdef isxdigit
+#  undef isxdigit
+#endif
