@@ -188,6 +188,19 @@ elseif ("${LIBCXX_CXX_ABI}" STREQUAL "vcruntime")
   add_library(libcxx-abi-shared INTERFACE)
   add_library(libcxx-abi-static INTERFACE)
 
+# Link against a system-provided libstdc++ from GCC2
+elseif ("${LIBCXX_CXX_ABI}" STREQUAL "gcc2")
+  add_library(libcxx-abi-headers INTERFACE)
+
+  import_shared_library(libcxx-abi-shared stdc++)
+  target_link_libraries(libcxx-abi-shared INTERFACE libcxx-abi-headers)
+  if(LIBCXX_CXX_ABI_LIBRARY_PATH)
+    target_link_options(libcxx-abi-shared INTERFACE -L${LIBCXX_CXX_ABI_LIBRARY_PATH})
+  endif()
+
+  import_static_library(libcxx-abi-static "${LIBCXX_CXX_ABI_LIBRARY_PATH}" stdc++)
+  target_link_libraries(libcxx-abi-static INTERFACE libcxx-abi-headers)
+
 # Don't link against any ABI library
 elseif ("${LIBCXX_CXX_ABI}" STREQUAL "none")
   add_library(libcxx-abi-headers INTERFACE)
