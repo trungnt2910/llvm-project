@@ -397,18 +397,66 @@ public:
     const CXXRecordDecl *RD = MD->getParent();
 
     const CXXRecordDecl *Base = RD;
+    const CXXMethodDecl *OrigMD = MD;
     if (MD->size_overridden_methods() > 0) {
       const CXXMethodDecl *TempMD = MD;
       while (TempMD->size_overridden_methods() > 0) {
         TempMD = *TempMD->overridden_methods().begin();
       }
-      Base = TempMD->getParent();
+      const CXXRecordDecl *TempBase = TempMD->getParent();
+      
+      bool IsPrimary = false;
+      const CXXRecordDecl *Curr = RD;
+      while (Curr) {
+        if (Curr == TempBase) {
+          IsPrimary = true;
+          break;
+        }
+        const ASTRecordLayout &Layout = getContext().getASTRecordLayout(Curr);
+        Curr = Layout.getPrimaryBase();
+      }
+      
+      if (!IsPrimary) {
+        Base = TempBase;
+        OrigMD = TempMD;
+      }
     }
 
     if (Base != RD) {
       This = convertAddressOfBaseClass(CGF, This, RD, Base);
+      RD = Base;
+      MD = const_cast<CXXMethodDecl*>(OrigMD);
     }
-    return This;
+
+    if (CGM.getLangOpts().VTableThunks) {
+      return This;
+    }
+
+    // Non-thunk implementation: load delta and adjust
+    llvm::Type *Int8PtrTy = CGM.Int8PtrTy;
+    llvm::Value *VTable = CGF.GetVTablePtr(This, Int8PtrTy, RD);
+    
+    GlobalDecl MethodGD = GD;
+    if (isa<CXXDestructorDecl>(MD))
+      MethodGD = GD.getWithDtorType(Dtor_Base);
+    else
+      MethodGD = GlobalDecl(MD);
+
+    uint64_t Index = CGM.getGCC2VTableContext().getMethodVTableIndex(MethodGD);
+    if (!CGM.getLangOpts().VTableThunks)
+      Index--;
+
+    llvm::Type *Int16Ty = CGF.Int16Ty;
+    llvm::Type *EntryTy = llvm::StructType::get(CGM.getLLVMContext(), {Int16Ty, Int16Ty, Int8PtrTy});
+    llvm::Value *EntryPtr = CGF.Builder.CreateConstInBoundsGEP1_64(EntryTy, VTable, Index, "vfn.entry");
+
+    llvm::Value *DeltaPtr = CGF.Builder.CreateStructGEP(EntryTy, EntryPtr, 0, "vfn.delta_ptr");
+    llvm::Value *DeltaVal = CGF.Builder.CreateAlignedLoad(Int16Ty, DeltaPtr, CharUnits::fromQuantity(2), "vfn.delta");
+    llvm::Value *Adj = CGF.Builder.CreateSExt(DeltaVal, CGM.PtrDiffTy, "vfn.adj");
+
+    llvm::Value *ThisPtr = This.emitRawPointer(CGF);
+    llvm::Value *AdjustedThisPtr = CGF.Builder.CreateInBoundsGEP(CGF.Builder.getInt8Ty(), ThisPtr, Adj, "this.adjusted");
+    return Address(AdjustedThisPtr, CGF.Builder.getInt8Ty(), This.getAlignment());
   }
 
   llvm::CallInst *emitAtExitDtorCall(CodeGenFunction &CGF,
@@ -469,6 +517,7 @@ public:
     VTableLayout::AddressPointLocation AddressPoint = VTLayout.getAddressPoint(Base);
     unsigned vtableIndex = AddressPoint.VTableIndex;
 
+    size_t prefixLen = CGM.getLangOpts().VTableThunks ? 5 : 4;
     SmallString<256> Name;
     {
       llvm::raw_svector_ostream Out(Name);
@@ -483,7 +532,7 @@ public:
         getMangleContext().mangleCXXVTable(BaseRD, Out);
       }
       Name += ".";
-      Name += BaseVTName.str().substr(5);
+      Name += BaseVTName.str().substr(prefixLen);
     }
 
     llvm::GlobalVariable *VTable = CGM.getModule().getNamedGlobal(Name);
@@ -624,13 +673,28 @@ public:
     if (isa<CXXDestructorDecl>(MethodDecl))
       GD = GD.getWithDtorType(Dtor_Base);
     uint64_t Index = CGM.getGCC2VTableContext().getMethodVTableIndex(GD);
+    if (!CGM.getLangOpts().VTableThunks)
+      Index--;
 
-    llvm::Value *VFuncPtr = CGF.Builder.CreateConstInBoundsGEP1_64(
-        Int8PtrTy, VTable, Index);
-    llvm::Value *VFunc = CGF.Builder.CreateAlignedLoad(
-        Int8PtrTy, VFuncPtr, CGF.getPointerAlign());
-    return CGCallee(GD, VFunc, CGPointerAuthInfo());
+    if (CGM.getLangOpts().VTableThunks) {
+      llvm::Value *VFuncPtr = CGF.Builder.CreateConstInBoundsGEP1_64(
+          Int8PtrTy, VTable, Index);
+      llvm::Value *VFunc = CGF.Builder.CreateAlignedLoad(
+          Int8PtrTy, VFuncPtr, CGF.getPointerAlign());
+      return CGCallee(GD, VFunc, CGPointerAuthInfo());
+    }
+
+    // Non-thunk implementation: load func from struct entry
+    llvm::Type *Int16Ty = CGF.Int16Ty;
+    llvm::Type *EntryTy = llvm::StructType::get(CGM.getLLVMContext(), {Int16Ty, Int16Ty, Int8PtrTy});
+    llvm::Value *EntryPtr = CGF.Builder.CreateConstInBoundsGEP1_64(EntryTy, VTable, Index, "vfn.entry");
+
+    llvm::Value *FuncPtrPtr = CGF.Builder.CreateStructGEP(EntryTy, EntryPtr, 2, "vfn.func_ptr");
+    llvm::Value *FuncVal = CGF.Builder.CreateAlignedLoad(Int8PtrTy, FuncPtrPtr, CGF.getPointerAlign(), "vfn.func");
+    return CGCallee(GD, FuncVal, CGPointerAuthInfo());
   }
+
+
 
   std::pair<llvm::Value *, const CXXRecordDecl *>
   LoadVTablePtr(CodeGenFunction &CGF, Address This,
@@ -732,7 +796,26 @@ public:
       CastThis = convertAddressOfBaseClass(CGF, This, RD, FirstRD);
     }
 
-    CGCallee Callee = getVirtualFunctionPointer(CGF, GD, CastThis, Ty, CE ? CE->getBeginLoc() : D->getBeginLoc());
+    CGCallee Callee;
+    if (!CGM.getLangOpts().VTableThunks) {
+      llvm::Type *Int8PtrTy = CGM.Int8PtrTy;
+      llvm::Value *VTable = CGF.GetVTablePtr(CastThis, Int8PtrTy, FirstRD);
+      uint64_t Index = CGM.getGCC2VTableContext().getMethodVTableIndex(GD.getWithDtorType(Dtor_Base)) - 1;
+      llvm::Type *EntryTy = llvm::StructType::get(CGM.getLLVMContext(), {CGM.Int16Ty, CGM.Int16Ty, Int8PtrTy});
+      llvm::Value *EntryPtr = CGF.Builder.CreateConstInBoundsGEP1_64(EntryTy, VTable, Index, "vfn.entry");
+      llvm::Value *DeltaPtr = CGF.Builder.CreateStructGEP(EntryTy, EntryPtr, 0, "vfn.delta_ptr");
+      llvm::Value *DeltaVal = CGF.Builder.CreateAlignedLoad(CGM.Int16Ty, DeltaPtr, CharUnits::fromQuantity(2), "vfn.delta");
+      llvm::Value *Adj = CGF.Builder.CreateSExt(DeltaVal, CGM.PtrDiffTy, "vfn.adj");
+      llvm::Value *ThisPtr = CastThis.emitRawPointer(CGF);
+      llvm::Value *AdjustedThisPtr = CGF.Builder.CreateInBoundsGEP(CGF.Int8Ty, ThisPtr, Adj, "this.adjusted");
+      CastThis = Address(AdjustedThisPtr, CGF.Int8Ty, CastThis.getAlignment());
+      llvm::Value *FuncPtrPtr = CGF.Builder.CreateStructGEP(EntryTy, EntryPtr, 2, "vfn.func_ptr");
+      llvm::Value *FuncVal = CGF.Builder.CreateAlignedLoad(Int8PtrTy, FuncPtrPtr, CGF.getPointerAlign(), "vfn.func");
+      llvm::Value *Func = FuncVal;
+      Callee = CGCallee(GD, Func);
+    } else {
+      Callee = getVirtualFunctionPointer(CGF, GD, CastThis, Ty, CE ? CE->getBeginLoc() : D->getBeginLoc());
+    }
     llvm::Value *InChrg = getCXXDestructorImplicitParam(CGF, Dtor, DtorType, false, false);
     QualType InChrgTy = getContext().IntTy;
 
@@ -999,7 +1082,12 @@ public:
     }
     llvm::Constant *TypeNameConst = CGM.GetAddrOfConstantCString(TypeNameStr.str().str()).getPointer();
 
-    StringRef VTableName = "__vt_16__user_type_info";
+    auto GetRTTIVTableName = [&](StringRef className) -> std::string {
+      StringRef vtPrefix = CGM.getLangOpts().VTableThunks ? "__vt_" : "_vt.";
+      return (vtPrefix + className).str();
+    };
+
+    std::string VTableName = GetRTTIVTableName("16__user_type_info");
     llvm::Constant *ThirdElem = nullptr;
     llvm::Constant *FourthElem = nullptr;
     llvm::Constant *ThirdFn = nullptr;
@@ -1008,7 +1096,7 @@ public:
 
     QualType CanTy = Ty.getCanonicalType();
     if (CanTy.isConstQualified() || CanTy.isVolatileQualified()) {
-      VTableName = "__vt_16__attr_type_info";
+      VTableName = GetRTTIVTableName("16__attr_type_info");
       QualType UnqualTy = CanTy.getUnqualifiedType();
       ThirdElem = getAddrOfRTTIDescriptor(UnqualTy);
       ThirdFn = getAddrOfRTTIFunction(UnqualTy);
@@ -1019,39 +1107,39 @@ public:
       FourthElem = llvm::ConstantInt::get(CGM.Int32Ty, AttrVal);
       RTTITy = llvm::StructType::get(CGM.getLLVMContext(), {Int8PtrTy, Int8PtrTy, Int8PtrTy, CGM.Int32Ty});
     } else if (Ty->isPointerType() || Ty->isReferenceType()) {
-      VTableName = "__vt_19__pointer_type_info";
+      VTableName = GetRTTIVTableName("19__pointer_type_info");
       QualType PointeeTy = Ty->isPointerType() ? Ty->getPointeeType() : Ty.getNonReferenceType();
       ThirdElem = getAddrOfRTTIDescriptor(PointeeTy);
       ThirdFn = getAddrOfRTTIFunction(PointeeTy);
       RTTITy = llvm::ArrayType::get(Int8PtrTy, 3);
     } else if (Ty->isMemberFunctionPointerType()) {
-      VTableName = "__vt_16__ptmf_type_info";
+      VTableName = GetRTTIVTableName("16__ptmf_type_info");
       RTTITy = llvm::ArrayType::get(Int8PtrTy, 2);
     } else if (Ty->isMemberDataPointerType()) {
-      VTableName = "__vt_16__ptmd_type_info";
+      VTableName = GetRTTIVTableName("16__ptmd_type_info");
       RTTITy = llvm::ArrayType::get(Int8PtrTy, 2);
     } else if (Ty->isArrayType()) {
-      VTableName = "__vt_17__array_type_info";
+      VTableName = GetRTTIVTableName("17__array_type_info");
       RTTITy = llvm::ArrayType::get(Int8PtrTy, 2);
     } else if (Ty->isFunctionType()) {
-      VTableName = "__vt_16__func_type_info";
+      VTableName = GetRTTIVTableName("16__func_type_info");
       RTTITy = llvm::ArrayType::get(Int8PtrTy, 2);
     } else if (Ty->isBuiltinType()) {
-      VTableName = "__vt_19__builtin_type_info";
+      VTableName = GetRTTIVTableName("19__builtin_type_info");
       RTTITy = llvm::ArrayType::get(Int8PtrTy, 2);
     } else if (const auto *RD = Ty->getAsCXXRecordDecl()) {
       if (RD->getNumBases() == 0) {
-        VTableName = "__vt_16__user_type_info";
+        VTableName = GetRTTIVTableName("16__user_type_info");
         RTTITy = llvm::ArrayType::get(Int8PtrTy, 2);
       } else if (RD->getNumBases() == 1 && RD->bases_begin()->getAccessSpecifier() == AS_public && !RD->bases_begin()->isVirtual()) {
-        VTableName = "__vt_14__si_type_info";
+        VTableName = GetRTTIVTableName("14__si_type_info");
         ThirdElem = getAddrOfRTTIDescriptor(RD->bases_begin()->getType());
         ThirdFn = getAddrOfRTTIFunction(RD->bases_begin()->getType());
         FourthElem = llvm::ConstantInt::get(CGM.Int32Ty, RD->bases_begin()->isVirtual() ? 1 : 0);
         RTTITy = llvm::StructType::get(CGM.getLLVMContext(), {Int8PtrTy, Int8PtrTy, Int8PtrTy, CGM.Int32Ty});
       } else {
 
-        VTableName = "__vt_17__class_type_info";
+        VTableName = GetRTTIVTableName("17__class_type_info");
         SmallVector<llvm::Constant *, 4> BaseInfos;
         llvm::StructType *BaseInfoTy = llvm::StructType::get(CGM.getLLVMContext(), {Int8PtrTy, CGM.Int32Ty});
         const ASTRecordLayout &Layout = getContext().getASTRecordLayout(RD);
@@ -1227,9 +1315,20 @@ public:
     llvm::Constant *To = getAddrOfRTTIFunction(DestRecordTy);
     llvm::Value *RequirePublic = llvm::ConstantInt::get(CGM.Int32Ty, 1);
 
-    llvm::Value *OffsetToTopPtr = CGF.Builder.CreateConstInBoundsGEP1_64(Int8PtrTy, VTable, 0);
-    llvm::Value *OffsetToTop = CGF.Builder.CreateAlignedLoad(Int8PtrTy, OffsetToTopPtr, CGF.getPointerAlign());
-    llvm::Value *Address = CGF.Builder.CreateInBoundsGEP(CGF.Int8Ty, CGF.Builder.CreateBitCast(Value.emitRawPointer(CGF), Int8PtrTy), CGF.Builder.CreatePtrToInt(OffsetToTop, CGM.PtrDiffTy));
+    llvm::Value *OffsetVal;
+    if (!CGM.getLangOpts().VTableThunks) {
+      llvm::Type *Int16Ty = CGF.Int16Ty;
+      llvm::Type *EntryTy = llvm::StructType::get(CGF.getLLVMContext(), {Int16Ty, Int16Ty, Int8PtrTy});
+      llvm::Value *EntryPtr = CGF.Builder.CreateConstInBoundsGEP1_64(EntryTy, VTable, 0, "vfn.entry");
+      llvm::Value *DeltaPtr = CGF.Builder.CreateStructGEP(EntryTy, EntryPtr, 0, "vfn.delta_ptr");
+      llvm::Value *DeltaVal = CGF.Builder.CreateAlignedLoad(Int16Ty, DeltaPtr, CharUnits::fromQuantity(2), "vfn.delta");
+      OffsetVal = CGF.Builder.CreateSExt(DeltaVal, CGM.PtrDiffTy, "vfn.adj");
+    } else {
+      llvm::Value *OffsetToTopPtr = CGF.Builder.CreateConstInBoundsGEP1_64(Int8PtrTy, VTable, 0);
+      llvm::Value *OffsetToTop = CGF.Builder.CreateAlignedLoad(Int8PtrTy, OffsetToTopPtr, CGF.getPointerAlign());
+      OffsetVal = CGF.Builder.CreatePtrToInt(OffsetToTop, CGM.PtrDiffTy);
+    }
+    llvm::Value *Address = CGF.Builder.CreateInBoundsGEP(CGF.Int8Ty, CGF.Builder.CreateBitCast(Value.emitRawPointer(CGF), Int8PtrTy), OffsetVal);
 
     llvm::Constant *Sub = getAddrOfRTTIFunction(SrcRecordTy);
     llvm::Value *Subptr = CGF.Builder.CreateBitCast(Value.emitRawPointer(CGF), Int8PtrTy);
@@ -1242,9 +1341,20 @@ public:
     llvm::Type *Int8PtrTy = CGM.Int8PtrTy;
     auto *SrcDecl = SrcRecordTy->getAsCXXRecordDecl();
     llvm::Value *VTable = CGF.GetVTablePtr(Value, Int8PtrTy, SrcDecl);
-    llvm::Value *OffsetToTopPtr = CGF.Builder.CreateConstInBoundsGEP1_64(Int8PtrTy, VTable, 0);
-    llvm::Value *OffsetToTop = CGF.Builder.CreateAlignedLoad(Int8PtrTy, OffsetToTopPtr, CGF.getPointerAlign());
-    llvm::Value *Res = CGF.Builder.CreateInBoundsGEP(CGF.Int8Ty, CGF.Builder.CreateBitCast(Value.emitRawPointer(CGF), Int8PtrTy), CGF.Builder.CreatePtrToInt(OffsetToTop, CGM.PtrDiffTy));
+    llvm::Value *OffsetVal;
+    if (!CGM.getLangOpts().VTableThunks) {
+      llvm::Type *Int16Ty = CGF.Int16Ty;
+      llvm::Type *EntryTy = llvm::StructType::get(CGF.getLLVMContext(), {Int16Ty, Int16Ty, Int8PtrTy});
+      llvm::Value *EntryPtr = CGF.Builder.CreateConstInBoundsGEP1_64(EntryTy, VTable, 0, "vfn.entry");
+      llvm::Value *DeltaPtr = CGF.Builder.CreateStructGEP(EntryTy, EntryPtr, 0, "vfn.delta_ptr");
+      llvm::Value *DeltaVal = CGF.Builder.CreateAlignedLoad(Int16Ty, DeltaPtr, CharUnits::fromQuantity(2), "vfn.delta");
+      OffsetVal = CGF.Builder.CreateSExt(DeltaVal, CGM.PtrDiffTy, "vfn.adj");
+    } else {
+      llvm::Value *OffsetToTopPtr = CGF.Builder.CreateConstInBoundsGEP1_64(Int8PtrTy, VTable, 0);
+      llvm::Value *OffsetToTop = CGF.Builder.CreateAlignedLoad(Int8PtrTy, OffsetToTopPtr, CGF.getPointerAlign());
+      OffsetVal = CGF.Builder.CreatePtrToInt(OffsetToTop, CGM.PtrDiffTy);
+    }
+    llvm::Value *Res = CGF.Builder.CreateInBoundsGEP(CGF.Int8Ty, CGF.Builder.CreateBitCast(Value.emitRawPointer(CGF), Int8PtrTy), OffsetVal);
     return Res;
   }
   std::optional<ExactDynamicCastInfo>
@@ -1334,6 +1444,8 @@ public:
       CharUnits BaseOffset = getOffsetToBase(MD->getParent(), OrigClass, getContext());
 
       uint64_t Index = CGM.getGCC2VTableContext().getMethodVTableIndex(OrigMD);
+      if (!CGM.getLangOpts().VTableThunks)
+        Index--;
       Values[0] = llvm::ConstantInt::get(CGM.Int16Ty, (ThisAdjustment + BaseOffset).getQuantity());
       Values[1] = llvm::ConstantInt::get(CGM.Int16Ty, Index + 1);
       const ASTRecordLayout &OrigLayout = getContext().getASTRecordLayout(OrigClass);
@@ -1575,7 +1687,6 @@ public:
 
     llvm::Value *OrigThis = ThisAddr.emitRawPointer(CGF);
     llvm::Value *This = Builder.CreateInBoundsGEP(Builder.getInt8Ty(), OrigThis, Adj);
-    ThisPtrForCall = This;
 
     llvm::Value *Index = Builder.CreateExtractValue(MemFnPtr, 1, "memptr.index");
     llvm::Value *NegOne = llvm::ConstantInt::get(Index->getType(), -1ULL, /*isSigned=*/true);
@@ -1589,17 +1700,42 @@ public:
 
     llvm::Value *VTableThis = Builder.CreateInBoundsGEP(Builder.getInt8Ty(), OrigThis, Delta2Adj);
 
-    llvm::Type *VTableTy = CGM.GlobalsInt8PtrTy;
-    CharUnits VTablePtrAlign = CGM.getDynamicOffsetAlignment(ThisAddr.getAlignment(), RD, CGF.getPointerAlign());
-    Address VTablePtrSrc = Address(VTableThis, Builder.getInt8Ty(), VTablePtrAlign).withElementType(VTableTy);
-    llvm::Instruction *VTable = CGF.Builder.CreateLoad(VTablePtrSrc, "vtable");
-    TBAAAccessInfo TBAAInfo = CGM.getTBAAVTablePtrAccessInfo(VTableTy);
-    CGM.DecorateInstructionWithTBAA(VTable, TBAAInfo);
+    llvm::Value *VirtualFn;
+    llvm::Value *ThisVirt;
+    if (!CGM.getLangOpts().VTableThunks) {
+      llvm::Type *EntryTy = llvm::StructType::get(CGM.getLLVMContext(), {CGM.Int16Ty, CGM.Int16Ty, CGM.Int8PtrTy});
+      llvm::Type *VTableTy = CGM.GlobalsInt8PtrTy;
+      CharUnits VTablePtrAlign = CGM.getDynamicOffsetAlignment(ThisAddr.getAlignment(), RD, CGF.getPointerAlign());
+      Address VTablePtrSrc = Address(VTableThis, Builder.getInt8Ty(), VTablePtrAlign).withElementType(VTableTy);
+      llvm::Instruction *VTable = CGF.Builder.CreateLoad(VTablePtrSrc, "vtable");
+      TBAAAccessInfo TBAAInfo = CGM.getTBAAVTablePtrAccessInfo(VTableTy);
+      CGM.DecorateInstructionWithTBAA(VTable, TBAAInfo);
 
-    llvm::Value *VTableIndex = Builder.CreateSub(Builder.CreateSExt(Index, CGM.PtrDiffTy), llvm::ConstantInt::get(CGM.PtrDiffTy, 1));
-    llvm::Value *VTableOffset = Builder.CreateMul(VTableIndex, llvm::ConstantInt::get(CGM.PtrDiffTy, CGM.getPointerSize().getQuantity()));
-    llvm::Value *VFPAddr = Builder.CreateGEP(CGF.Int8Ty, VTable, VTableOffset);
-    llvm::Value *VirtualFn = CGF.Builder.CreateAlignedLoad(CGF.DefaultPtrTy, VFPAddr, CGF.getPointerAlign(), "memptr.virtualfn");
+      llvm::Value *VTableIndex = Builder.CreateSub(Builder.CreateSExt(Index, CGM.PtrDiffTy), llvm::ConstantInt::get(CGM.PtrDiffTy, 1));
+      llvm::Value *EntryPtr = Builder.CreateGEP(EntryTy, VTable, VTableIndex, "memptr.entry");
+
+      llvm::Value *DeltaPtr = Builder.CreateStructGEP(EntryTy, EntryPtr, 0, "memptr.vtable_delta_ptr");
+      llvm::Value *DeltaVal = Builder.CreateAlignedLoad(CGM.Int16Ty, DeltaPtr, CharUnits::fromQuantity(2), "memptr.vtable_delta");
+      llvm::Value *VTableAdj = Builder.CreateSExt(DeltaVal, CGM.PtrDiffTy, "memptr.vtable_adj");
+      ThisVirt = Builder.CreateInBoundsGEP(Builder.getInt8Ty(), This, VTableAdj, "this.adjusted.virt");
+
+      llvm::Value *FuncPtrPtr = Builder.CreateStructGEP(EntryTy, EntryPtr, 2, "memptr.func_ptr");
+      llvm::Value *FuncVal = Builder.CreateAlignedLoad(CGM.Int8PtrTy, FuncPtrPtr, CGF.getPointerAlign(), "memptr.virtualfn");
+      VirtualFn = Builder.CreateBitCast(FuncVal, CGF.DefaultPtrTy);
+    } else {
+      llvm::Type *VTableTy = CGM.GlobalsInt8PtrTy;
+      CharUnits VTablePtrAlign = CGM.getDynamicOffsetAlignment(ThisAddr.getAlignment(), RD, CGF.getPointerAlign());
+      Address VTablePtrSrc = Address(VTableThis, Builder.getInt8Ty(), VTablePtrAlign).withElementType(VTableTy);
+      llvm::Instruction *VTable = CGF.Builder.CreateLoad(VTablePtrSrc, "vtable");
+      TBAAAccessInfo TBAAInfo = CGM.getTBAAVTablePtrAccessInfo(VTableTy);
+      CGM.DecorateInstructionWithTBAA(VTable, TBAAInfo);
+
+      llvm::Value *VTableIndex = Builder.CreateSub(Builder.CreateSExt(Index, CGM.PtrDiffTy), llvm::ConstantInt::get(CGM.PtrDiffTy, 1));
+      llvm::Value *VTableOffset = Builder.CreateMul(VTableIndex, llvm::ConstantInt::get(CGM.PtrDiffTy, CGM.getPointerSize().getQuantity()));
+      llvm::Value *VFPAddr = Builder.CreateGEP(CGF.Int8Ty, VTable, VTableOffset);
+      VirtualFn = CGF.Builder.CreateAlignedLoad(CGF.DefaultPtrTy, VFPAddr, CGF.getPointerAlign(), "memptr.virtualfn");
+      ThisVirt = This;
+    }
     CGF.EmitBranch(FnEnd);
 
     CGF.EmitBlock(FnNonVirtual);
@@ -1610,6 +1746,11 @@ public:
     llvm::PHINode *CalleePtr = Builder.CreatePHI(CGF.DefaultPtrTy, 2);
     CalleePtr->addIncoming(VirtualFn, FnVirtual);
     CalleePtr->addIncoming(NonVirtualFn, FnNonVirtual);
+
+    llvm::PHINode *AdjustedThisPHI = Builder.CreatePHI(CGF.DefaultPtrTy, 2, "memptr.this.phi");
+    AdjustedThisPHI->addIncoming(ThisVirt, FnVirtual);
+    AdjustedThisPHI->addIncoming(This, FnNonVirtual);
+    ThisPtrForCall = AdjustedThisPHI;
 
     return CGCallee(FPT, CalleePtr, CGPointerAuthInfo());
   }
@@ -1960,8 +2101,11 @@ public:
         }
         std::string VListNameStr = Name.str().str();
         StringRef VListName = VListNameStr;
-        if (VListName.starts_with("__vt_")) {
-          VListNameStr = "__vl_" + VListName.substr(5).str();
+        StringRef vtPrefix = CGM.getLangOpts().VTableThunks ? "__vt_" : "_vt.";
+        StringRef vlPrefix = CGM.getLangOpts().VTableThunks ? "__vl_" : "_vl.";
+        size_t prefixLen = CGM.getLangOpts().VTableThunks ? 5 : 4;
+        if (VListName.starts_with(vtPrefix)) {
+          VListNameStr = (vlPrefix + VListName.substr(prefixLen)).str();
           VListName = VListNameStr;
         }
         llvm::GlobalVariable *VListGV = CGM.getModule().getNamedGlobal(VListName);
@@ -2032,8 +2176,11 @@ public:
       }
       std::string VListNameStr = Name.str().str();
       StringRef VListName = VListNameStr;
-      if (VListName.starts_with("__vt_")) {
-        VListNameStr = "__vl_" + VListName.substr(5).str();
+      StringRef vtPrefix = CGM.getLangOpts().VTableThunks ? "__vt_" : "_vt.";
+      StringRef vlPrefix = CGM.getLangOpts().VTableThunks ? "__vl_" : "_vl.";
+      size_t prefixLen = CGM.getLangOpts().VTableThunks ? 5 : 4;
+      if (VListName.starts_with(vtPrefix)) {
+        VListNameStr = (vlPrefix + VListName.substr(prefixLen)).str();
         VListName = VListNameStr;
       }
       llvm::GlobalVariable *VListGV = CGM.getModule().getNamedGlobal(VListName);
@@ -2189,13 +2336,15 @@ public:
           }
         }
         if (BaseRD) {
+          BaseOffset = getGCC2BaseClassOffset(RD, BaseRD);
           SmallString<256> BaseVTName;
           {
             llvm::raw_svector_ostream Out(BaseVTName);
             getMangleContext().mangleCXXVTable(BaseRD, Out);
           }
+          size_t prefixLen = CGM.getLangOpts().VTableThunks ? 5 : 4;
           Name += ".";
-          Name += BaseVTName.str().substr(5);
+          Name += BaseVTName.str().substr(prefixLen);
 
           if (BaseRD->getDestructor() && BaseRD->getDestructor()->isVirtual()) {
             size_t vtableStart = VTLayout.getVTableOffset(vtableIndex);
@@ -2211,18 +2360,39 @@ public:
             }
             if (!HasDtor && !isDestructorInVirtualBase(BaseRD)) {
               InjectDtor = true;
-              BaseOffset = getGCC2BaseClassOffset(RD, BaseRD);
             }
           }
         }
       }
 
+      auto MakeVTableEntry = [&](llvm::Constant *Func, int16_t Delta) -> llvm::Constant * {
+        if (CGM.getLangOpts().VTableThunks)
+          return llvm::ConstantExpr::getBitCast(Func, Int8PtrTy);
+        llvm::Type *EntryTy = llvm::StructType::get(CGM.getLLVMContext(), {CGM.Int16Ty, CGM.Int16Ty, CGM.Int8PtrTy});
+        llvm::Constant *Values[3] = {
+          llvm::ConstantInt::get(CGM.Int16Ty, Delta),
+          llvm::ConstantInt::get(CGM.Int16Ty, 0),
+          llvm::ConstantExpr::getBitCast(Func, Int8PtrTy)
+        };
+        return llvm::ConstantStruct::get(cast<llvm::StructType>(EntryTy), Values);
+      };
+
       llvm::GlobalVariable *VTable = CGM.getModule().getNamedGlobal(Name);
+      llvm::Type *EntryTy = CGM.getLangOpts().VTableThunks ? Int8PtrTy : llvm::StructType::get(CGM.getLLVMContext(), {CGM.Int16Ty, CGM.Int16Ty, CGM.Int8PtrTy});
       if (!VTable) {
         size_t VTableSize = VTLayout.getVTableSize(vtableIndex);
+        if (!CGM.getLangOpts().VTableThunks) {
+          size_t vtableStart = VTLayout.getVTableOffset(vtableIndex);
+          size_t vtableEnd = vtableStart + VTableSize;
+          for (size_t i = vtableStart; i < vtableEnd; ++i) {
+            if (VTLayout.vtable_components()[i].getKind() == VTableComponent::CK_OffsetToTop) {
+              VTableSize--;
+            }
+          }
+        }
         if (InjectDtor)
           VTableSize++;
-        llvm::Type *VTableTy = llvm::ArrayType::get(Int8PtrTy, VTableSize);
+        llvm::Type *VTableTy = llvm::ArrayType::get(EntryTy, VTableSize);
 
         VTable = new llvm::GlobalVariable(
             CGM.getModule(), VTableTy, /*isConstant=*/true,
@@ -2248,25 +2418,33 @@ public:
         case VTableComponent::CK_VBaseOffset:
         case VTableComponent::CK_OffsetToTop:
           if (comp.getKind() == VTableComponent::CK_OffsetToTop) {
-            CharUnits offset = comp.getOffsetToTop();
-            llvm::Constant *offsetVal = llvm::ConstantInt::getSigned(CGM.Int32Ty, offset.getQuantity());
-            InitElems.push_back(llvm::ConstantExpr::getIntToPtr(offsetVal, Int8PtrTy));
+            if (CGM.getLangOpts().VTableThunks) {
+              CharUnits offset = comp.getOffsetToTop();
+              llvm::Constant *offsetVal = llvm::ConstantInt::getSigned(CGM.Int32Ty, offset.getQuantity());
+              InitElems.push_back(MakeVTableEntry(llvm::ConstantExpr::getIntToPtr(offsetVal, Int8PtrTy), 0));
+            }
           } else {
-            InitElems.push_back(ZeroPtr);
+            InitElems.push_back(MakeVTableEntry(ZeroPtr, 0));
           }
           break;
         case VTableComponent::CK_RTTI:
-          InitElems.push_back(RTTI ? llvm::ConstantExpr::getBitCast(RTTI, Int8PtrTy) : ZeroPtr);
+          InitElems.push_back(MakeVTableEntry(RTTI ? RTTI : ZeroPtr, -BaseOffset.getQuantity()));
           if (InjectDtor) {
             auto *DD = RD->getDestructor();
             GlobalDecl GD(DD, Dtor_Deleting);
-            ThunkInfo Thunk;
-            Thunk.This.NonVirtual = -BaseOffset.getQuantity();
-            Thunk.ThisType = CGM.getContext().getCanonicalTagType(BaseRD).getTypePtr();
-            Thunk.Method = DD;
-            (void)CGM.getAddrOfCXXStructor(GD);
-            llvm::Constant *ThunkFunc = CGVT.maybeEmitThunk(GD, Thunk, /*ForVTable=*/true);
-            InitElems.push_back(llvm::ConstantExpr::getBitCast(ThunkFunc, Int8PtrTy));
+            llvm::Constant *DtorFunc;
+            int16_t Delta = -BaseOffset.getQuantity();
+            if (CGM.getLangOpts().VTableThunks) {
+              ThunkInfo Thunk;
+              Thunk.This.NonVirtual = Delta;
+              Thunk.ThisType = CGM.getContext().getCanonicalTagType(BaseRD).getTypePtr();
+              Thunk.Method = DD;
+              (void)CGM.getAddrOfCXXStructor(GD);
+              DtorFunc = CGVT.maybeEmitThunk(GD, Thunk, /*ForVTable=*/true);
+            } else {
+              DtorFunc = CGM.getAddrOfCXXStructor(GD);
+            }
+            InitElems.push_back(MakeVTableEntry(DtorFunc, Delta));
           }
           break;
         case VTableComponent::CK_CompleteDtorPointer: {
@@ -2282,15 +2460,21 @@ public:
           bool IsThunk = nextVTableThunkIndex < VTLayout.vtable_thunks().size() &&
                          VTLayout.vtable_thunks()[nextVTableThunkIndex].first == i;
           llvm::Constant *Func;
+          int16_t Delta = 0;
           if (IsThunk) {
             auto &thunkInfo = VTLayout.vtable_thunks()[nextVTableThunkIndex].second;
             nextVTableThunkIndex++;
-            (void)CGM.getAddrOfCXXStructor(GD);
-            Func = CGVT.maybeEmitThunk(GD, thunkInfo, /*ForVTable=*/true);
+            Delta = thunkInfo.This.NonVirtual;
+            if (CGM.getLangOpts().VTableThunks) {
+              (void)CGM.getAddrOfCXXStructor(GD);
+              Func = CGVT.maybeEmitThunk(GD, thunkInfo, /*ForVTable=*/true);
+            } else {
+              Func = CGM.getAddrOfCXXStructor(GD);
+            }
           } else {
             Func = CGM.getAddrOfCXXStructor(GD);
           }
-          InitElems.push_back(llvm::ConstantExpr::getBitCast(Func, Int8PtrTy));
+          InitElems.push_back(MakeVTableEntry(Func, Delta));
           break;
         }
         case VTableComponent::CK_FunctionPointer: {
@@ -2298,6 +2482,7 @@ public:
           bool IsThunk = nextVTableThunkIndex < VTLayout.vtable_thunks().size() &&
                          VTLayout.vtable_thunks()[nextVTableThunkIndex].first == i;
           llvm::Constant *Func;
+          int16_t Delta = 0;
           const CXXMethodDecl *MD = cast<CXXMethodDecl>(GD.getDecl());
           if (MD->isPureVirtual()) {
             llvm::FunctionType *fnTy = llvm::FunctionType::get(CGM.VoidTy, /*isVarArg=*/false);
@@ -2314,21 +2499,33 @@ public:
           } else if (IsThunk) {
             auto &thunkInfo = VTLayout.vtable_thunks()[nextVTableThunkIndex].second;
             nextVTableThunkIndex++;
-            Func = CGVT.maybeEmitThunk(GD, thunkInfo, /*ForVTable=*/true);
+            Delta = thunkInfo.This.NonVirtual;
+            if (CGM.getLangOpts().VTableThunks) {
+              Func = CGVT.maybeEmitThunk(GD, thunkInfo, /*ForVTable=*/true);
+            } else {
+              if (!thunkInfo.Return.isEmpty()) {
+                // Covariant Return: emit return-adjusting thunk, clear 'this' adjustment
+                ThunkInfo modifiedThunk = thunkInfo;
+                modifiedThunk.This = ThisAdjustment();
+                Func = CGVT.maybeEmitThunk(GD, modifiedThunk, /*ForVTable=*/true);
+              } else {
+                Func = CGM.GetAddrOfFunction(GD, Int8PtrTy);
+              }
+            }
           } else {
             Func = CGM.GetAddrOfFunction(GD, Int8PtrTy);
           }
-          InitElems.push_back(llvm::ConstantExpr::getBitCast(Func, Int8PtrTy));
+          InitElems.push_back(MakeVTableEntry(Func, Delta));
           break;
         }
         case VTableComponent::CK_UnusedFunctionPointer: {
-          InitElems.push_back(llvm::ConstantExpr::getNullValue(Int8PtrTy));
+          InitElems.push_back(MakeVTableEntry(llvm::ConstantExpr::getNullValue(Int8PtrTy), 0));
           break;
         }
         }
       }
 
-      llvm::Type *VTableTy = llvm::ArrayType::get(Int8PtrTy, InitElems.size());
+      llvm::Type *VTableTy = llvm::ArrayType::get(EntryTy, InitElems.size());
       llvm::Constant *Init = llvm::ConstantArray::get(
           llvm::cast<llvm::ArrayType>(VTableTy), InitElems);
 
@@ -2355,8 +2552,11 @@ public:
       }
       std::string VListNameStr = Name.str().str();
       StringRef VListName = VListNameStr;
-      if (VListName.starts_with("__vt_")) {
-        VListNameStr = "__vl_" + VListName.substr(5).str();
+      StringRef vtPrefix = CGM.getLangOpts().VTableThunks ? "__vt_" : "_vt.";
+      StringRef vlPrefix = CGM.getLangOpts().VTableThunks ? "__vl_" : "_vl.";
+      size_t prefixLen = CGM.getLangOpts().VTableThunks ? 5 : 4;
+      if (VListName.starts_with(vtPrefix)) {
+        VListNameStr = (vlPrefix + VListName.substr(prefixLen)).str();
         VListName = VListNameStr;
       }
 
@@ -2776,8 +2976,11 @@ public:
           }
           std::string VListNameStr = Name.str().str();
           StringRef VListName = VListNameStr;
-          if (VListName.starts_with("__vt_")) {
-            VListNameStr = "__vl_" + VListName.substr(5).str();
+          StringRef vtPrefix = CGM.getLangOpts().VTableThunks ? "__vt_" : "_vt.";
+          StringRef vlPrefix = CGM.getLangOpts().VTableThunks ? "__vl_" : "_vl.";
+          size_t prefixLen = CGM.getLangOpts().VTableThunks ? 5 : 4;
+          if (VListName.starts_with(vtPrefix)) {
+            VListNameStr = (vlPrefix + VListName.substr(prefixLen)).str();
             VListName = VListNameStr;
           }
           llvm::GlobalVariable *VListGV = CGM.getModule().getNamedGlobal(VListName);

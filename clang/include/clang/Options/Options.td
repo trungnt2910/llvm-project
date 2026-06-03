@@ -1620,6 +1620,12 @@ def fapple_kext : Flag<["-"], "fapple-kext">, Group<f_Group>,
   Visibility<[ClangOption, CC1Option]>,
   HelpText<"Use Apple's kernel extensions ABI">,
   MarshallingInfoFlag<LangOpts<"AppleKext">>;
+defm vtable_thunks : BoolFOption<"vtable-thunks",
+  LangOpts<"VTableThunks">, DefaultTrue,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Implement vtables using thunks">,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option],
+          "Do not implement vtables using thunks">>;
 def fstrict_flex_arrays_EQ : Joined<["-"], "fstrict-flex-arrays=">, Group<f_Group>,
   MetaVarName<"<n>">, Values<"0,1,2,3">,
   LangOpts<"StrictFlexArraysLevel">,

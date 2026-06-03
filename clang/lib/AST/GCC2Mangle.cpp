@@ -523,6 +523,8 @@ void GCC2NameMangler::mangleTemplateArgs(const TemplateParameterList *Params,
         if (MD->isVirtual()) {
           auto *VTC = cast<GCC2VTableContext>(getASTContext().getVTableContext());
           uint64_t VTableIndex = VTC->getMethodVTableIndex(OrigMD);
+          if (!getASTContext().getLangOpts().VTableThunks)
+            VTableIndex--;
           const ASTRecordLayout &BaseLayout = getASTContext().getASTRecordLayout(Base);
           int64_t VFPtrOffset = BaseLayout.getVFPtrOffset().getQuantity();
           if (VFPtrOffset > 0 && !BaseLayout.hasOwnVFPtr() && !BaseLayout.getPrimaryBase()) {
@@ -1367,7 +1369,10 @@ void GCC2MangleContextImpl::mangleCXXDtorThunk(const CXXDestructorDecl *DD,
 void GCC2NameMangler::mangleCXXVTable(const CXXRecordDecl *RD, raw_ostream &Out) {
   if (Failed) return;
   NumericOutputNeedBar = false;
-  Out << "__vt_";
+  if (Context.getASTContext().getLangOpts().VTableThunks)
+    Out << "__vt_";
+  else
+    Out << "_vt.";
   manglePrefix(RD, Out);
 }
 

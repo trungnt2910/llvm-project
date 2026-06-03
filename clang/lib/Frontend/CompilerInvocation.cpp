@@ -4042,6 +4042,11 @@ bool CompilerInvocation::ParseLangArgs(LangOptions &Opts, ArgList &Args,
       }
     }
 
+    if (!Opts.VTableThunks && Opts.CXXABI != TargetCXXABI::GCC2) {
+      Diags.Report(diag::err_drv_argument_not_allowed_with)
+          << "-fno-vtable-thunks" << ("-fc++-abi=" + TargetCXXABI::getSpelling(Opts.CXXABI.value_or(TargetCXXABI::GenericItanium)));
+    }
+
     return Diags.getNumErrors() == NumErrorsBefore;
   }
 
