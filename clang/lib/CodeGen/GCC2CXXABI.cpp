@@ -2370,7 +2370,7 @@ public:
           return llvm::ConstantExpr::getBitCast(Func, Int8PtrTy);
         llvm::Type *EntryTy = llvm::StructType::get(CGM.getLLVMContext(), {CGM.Int16Ty, CGM.Int16Ty, CGM.Int8PtrTy});
         llvm::Constant *Values[3] = {
-          llvm::ConstantInt::get(CGM.Int16Ty, Delta),
+          llvm::ConstantInt::getSigned(CGM.Int16Ty, Delta),
           llvm::ConstantInt::get(CGM.Int16Ty, 0),
           llvm::ConstantExpr::getBitCast(Func, Int8PtrTy)
         };
